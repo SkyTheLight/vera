@@ -31,6 +31,17 @@
   const todayKey = () => toManilaDateKey(new Date().toISOString());
   const uid = (p) => p + Math.random().toString(36).slice(2, 8);
 
+  const DELIVERY_METHODS = [
+    'Guest Pickup & Guest Return',
+    'Guest Pickup & Host Collection',
+    'Host Delivery & Guest Return',
+    'Host Delivery & Host Collection'
+  ];
+  function getDeliveryMethod(r) {
+    if (!r || r.deliveryMethod == null || r.deliveryMethod === '') return 'Not specified';
+    return DELIVERY_METHODS.includes(r.deliveryMethod) ? r.deliveryMethod : String(r.deliveryMethod);
+  }
+
   // ---------- Domain ----------
   function getVehicle(id) { return state.vehicles.find(v => v.id === id); }
   function getReservation(id) { return state.reservations.find(r => r.id === id); }
@@ -365,6 +376,13 @@
             <form id="reqForm" onsubmit="App.submitReservation(event,'${v.id}')" class="stack">
               <div class="field"><label class="field-label" for="start">Start date and time</label><input id="start" class="input" required type="datetime-local" name="start" onchange="App.updateFeePreview('${v.id}')"></div>
               <div class="field"><label class="field-label" for="end">End date and time</label><input id="end" class="input" required type="datetime-local" name="end" onchange="App.updateFeePreview('${v.id}')"></div>
+              <div class="field"><label class="field-label" for="deliveryMethod">Delivery method</label>
+                <select id="deliveryMethod" name="deliveryMethod" class="select" required>
+                  <option value="">Select pickup and return option</option>
+                  ${DELIVERY_METHODS.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}
+                </select>
+                <div class="field-hint">Choose how the vehicle will be picked up and returned for this reservation.</div>
+              </div>
               <div id="feePreview" class="callout info small">Select start and end dates to calculate the estimated fee.</div>
               <div id="conflictMsg"></div>
               <button class="btn btn-primary btn-block" type="submit">Submit reservation request</button>
@@ -390,7 +408,7 @@
         const v = getVehicle(r.vehicleId); const p = getPaymentByReservation(r.id);
         return `<div class="list-row">
           <div class="list-row-main">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">${vehicleMark(v)}<div><div class="list-row-title"><a href="#/customer/reservation/${r.id}">${esc(v ? v.name : r.vehicleId)}</a></div><div class="list-row-meta">${fmtDateShort(r.start)} to ${fmtDateShort(r.end)} · ${fmtPHP(r.totalFee + (r.overtimeFee||0))}${r.overtimeFee ? ' (incl. overtime)' : ''}</div></div></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">${vehicleMark(v)}<div><div class="list-row-title"><a href="#/customer/reservation/${r.id}">${esc(v ? v.name : r.vehicleId)}</a></div><div class="list-row-meta">${fmtDateShort(r.start)} to ${fmtDateShort(r.end)} · ${fmtPHP(r.totalFee + (r.overtimeFee||0))}${r.overtimeFee ? ' (incl. overtime)' : ''}</div><div class="list-row-meta">Delivery: ${esc(getDeliveryMethod(r))}</div></div></div>
             ${timelineHTML(r.status)}
             ${p && r.status === 'approved' ? `<div class="small muted mt-2">Payment: ${statusBadge(p.status)}</div>` : ''}
           </div>
@@ -423,6 +441,7 @@
               <div class="k">Plate number</div><div class="v mono">${esc(v ? v.plateNumber : '—')}</div>
               <div class="k">Start</div><div class="v">${fmtDate(r.start, { time: true })}</div>
               <div class="k">End</div><div class="v">${fmtDate(r.end, { time: true })}</div>
+              <div class="k">Delivery method</div><div class="v">${esc(getDeliveryMethod(r))}</div>
               <div class="k">Total fee</div><div class="v">${fmtPHP(r.totalFee)}</div>
               <div class="k">Overtime fee</div><div class="v">${fmtPHP(r.overtimeFee || 0)}</div>
               <div class="k">Requested</div><div class="v">${fmtDate(r.createdAt, { time: true })}</div>
@@ -590,7 +609,7 @@
         return `<tr>
           <td><div class="cell-main">${esc(r.customerName)}</div><div class="cell-sub">${esc(r.customerEmail)}</div></td>
           <td><div class="cell-main">${esc(v?v.name:r.vehicleId)}</div><div class="cell-sub">${esc(v?v.plateNumber:'')}</div></td>
-          <td class="small">${fmtDateShort(r.start)} - ${fmtDateShort(r.end)}</td>
+          <td class="small">${fmtDateShort(r.start)} - ${fmtDateShort(r.end)}<div class="cell-sub">${esc(getDeliveryMethod(r))}</div></td>
           <td>${fmtPHP(r.totalFee)}${r.overtimeFee?`<div class="cell-sub">+ ${fmtPHP(r.overtimeFee)} OT</div>`:''}</td>
           <td>${p ? statusBadge(p.status) : '<span class="small muted">None</span>'}</td>
           <td><div class="btn-group">
@@ -617,7 +636,7 @@
           <div class="panel"><div class="panel-header"><div class="panel-title">Reservation details</div></div><div class="panel-body">
             <div class="form-grid">
               <div class="kv"><div class="k">Customer</div><div class="v">${esc(r.customerName)}</div><div class="k">Email</div><div class="v">${esc(r.customerEmail)}</div><div class="k">Phone</div><div class="v">${esc(cust?cust.phone:'—')}</div><div class="k">Customer since</div><div class="v">${fmtDateShort(cust?cust.joinedAt:r.createdAt)}</div></div>
-              <div class="kv"><div class="k">Vehicle</div><div class="v">${esc(v?v.name:'-')}</div><div class="k">Plate</div><div class="v mono">${esc(v?v.plateNumber:'-')}</div><div class="k">Period</div><div class="v">${fmtDateShort(r.start)} - ${fmtDateShort(r.end)}</div><div class="k">Requested</div><div class="v">${fmtDate(r.createdAt,{time:true})}</div></div>
+              <div class="kv"><div class="k">Vehicle</div><div class="v">${esc(v?v.name:'-')}</div><div class="k">Plate</div><div class="v mono">${esc(v?v.plateNumber:'-')}</div><div class="k">Period</div><div class="v">${fmtDateShort(r.start)} - ${fmtDateShort(r.end)}</div><div class="k">Delivery method</div><div class="v">${esc(getDeliveryMethod(r))}</div><div class="k">Requested</div><div class="v">${fmtDate(r.createdAt,{time:true})}</div></div>
             </div>
             <div class="divider"></div>
             <div class="kv"><div class="k">Rental fee</div><div class="v">${fmtPHP(r.totalFee)}</div><div class="k">Overtime fee</div><div class="v">${fmtPHP(r.overtimeFee||0)}</div><div class="k">Total</div><div class="v">${fmtPHP(r.totalFee + (r.overtimeFee||0))}</div>${r.actualReturn?`<div class="k">Actual return</div><div class="v">${fmtDate(r.actualReturn,{time:true})}</div>`:''}</div>
@@ -881,7 +900,13 @@
     e.preventDefault();
     const form = e.target; const btn = form.querySelector('button[type="submit"]');
     const startVal = form.start.value, endVal = form.end.value;
+    const deliveryMethod = form.deliveryMethod ? form.deliveryMethod.value : '';
     if (!startVal || !endVal) { toast('Please select start and end dates.', 'error'); return; }
+    if (!DELIVERY_METHODS.includes(deliveryMethod)) {
+      toast('Please select a delivery method.', 'error');
+      if (form.deliveryMethod) form.deliveryMethod.focus();
+      return;
+    }
     const start = new Date(startVal).toISOString(), end = new Date(endVal).toISOString();
     if (new Date(end) <= new Date(start)) { toast('End date must be after start date.', 'error'); updateFeePreview(vehicleId); return; }
     const conflict = hasConflict(vehicleId, start, end);
@@ -892,7 +917,7 @@
     if (btn) btn.disabled = true;
     const cust = currentCustomer();
     const { total } = computeFee(vehicleId, start, end);
-    const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '' };
+    const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod };
     setTimeout(() => {
       state.reservations.unshift(r);
       notify('admin', 'New reservation request', `${cust.name} requested ${getVehicle(vehicleId)?.name || 'a vehicle'}.`, '#/admin/reservations');
