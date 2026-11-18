@@ -899,6 +899,7 @@
   function submitReservation(e, vehicleId) {
     e.preventDefault();
     const form = e.target; const btn = form.querySelector('button[type="submit"]');
+    if (btn && btn.disabled) return;
     const startVal = form.start.value, endVal = form.end.value;
     const deliveryMethod = form.deliveryMethod ? form.deliveryMethod.value : '';
     if (!startVal || !endVal) { toast('Please select start and end dates.', 'error'); return; }
@@ -1112,7 +1113,9 @@
     openPaymentModal, verifyPayment, rejectPayment, openRejectPaymentModal, submitRejectPayment,
     openVehicleModal, saveVehicle, setVehicleStatus, changeVehicleStatus,
     openMaintenanceModal, saveMaintenance, resolveLog, openResolveLogModal, submitResolveLog,
-    saveAdminNotes, openCustomerModal, closeModal, _confirm: null
+    saveAdminNotes, openCustomerModal, closeModal, _confirm: null,
+    // Exposed for automated tests and inspection (no UI behavior change)
+    DELIVERY_METHODS, getDeliveryMethod, overlaps, computeFee, computeOvertime, hasConflict
   };
 
   document.addEventListener('click', (e) => {
