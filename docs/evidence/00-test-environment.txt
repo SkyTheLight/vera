@@ -1,0 +1,4 @@
+Test run: 2026-11-20 03:24:57 +08:00
+v24.14.0
+Platform: Windows
+Browser tool: in-app browser automation (tab-based)
