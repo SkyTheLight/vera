@@ -4608,3 +4608,49 @@ input::placeholder, textarea::placeholder {
   .assistant-fab { right: 16px; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); width:52px; height:52px; }
   .assistant-panel { right: 12px; left: 12px; bottom: calc(136px + env(safe-area-inset-bottom, 0px)); width: auto; max-height: min(62vh, 560px); }
 }
+
+
+/* Booking redesign */
+.cc-chips { display:flex; gap:8px; flex-wrap:wrap; }
+.cc-chip { border:1px solid var(--border); background:var(--surface-alt); color:var(--text); padding:8px 12px; border-radius:999px; cursor:pointer; font-size:12px; }
+.cc-chip.active { background:var(--accent-soft); border-color:var(--accent); color:var(--accent-hover); }
+.vehicle-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; }
+.vehicle-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
+.vehicle-card.is-unavailable { opacity:.72; }
+.vehicle-card-media { position:relative; aspect-ratio:16/10; background:var(--surface-alt); }
+.vehicle-card-media img,.vehicle-card-media .vehicle-fallback { width:100%; height:100%; object-fit:cover; display:block; }
+.availability-pill { position:absolute; top:10px; left:10px; padding:4px 8px; border-radius:999px; font-size:11px; font-weight:600; border:1px solid transparent; }
+.availability-pill.tone-success { background:var(--success-soft); color:var(--success); border-color:rgba(63,185,80,.3); }
+.availability-pill.tone-warning { background:var(--warning-soft); color:var(--warning); border-color:rgba(227,179,65,.3); }
+.availability-pill.tone-danger,.availability-pill.tone-muted { background:var(--danger-soft); color:var(--danger); border-color:rgba(248,81,73,.25); }
+.vehicle-card-body { padding:14px; display:flex; flex-direction:column; gap:8px; }
+.vehicle-card-top { display:flex; justify-content:space-between; gap:10px; }
+.vehicle-card-name { font-weight:600; }
+.vehicle-card-rate { font-weight:600; white-space:nowrap; }
+.vehicle-card-rate span,.muted { color:var(--text-muted); }
+.vehicle-card-meta { display:flex; justify-content:space-between; gap:8px; font-size:12px; color:var(--text-muted); }
+.booking-flow { gap:14px; }
+.booking-step { border:1px solid var(--border); border-radius:8px; padding:14px; background:rgba(255,255,255,0.01); }
+.step-head { display:flex; gap:10px; align-items:flex-start; margin-bottom:10px; }
+.step-num { width:24px; height:24px; border-radius:50%; background:var(--accent-soft); color:var(--accent); display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex:0 0 auto; }
+.step-title { font-weight:600; }
+.grid-2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.link-btn { background:none; border:none; color:var(--accent); padding:0; cursor:pointer; text-decoration:underline; font:inherit; }
+.link-btn:hover { color:var(--accent-hover); }
+.next-step-banner { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:14px 16px; border-radius:10px; border:1px solid var(--border); margin-bottom:16px; }
+.next-step-banner .next-step-title { font-weight:600; margin-bottom:2px; }
+.next-step-banner .next-step-msg { font-size:13px; color:var(--text-muted); }
+.next-step-banner.tone-primary { background:var(--accent-soft); border-color:rgba(88,166,255,.35); }
+.next-step-banner.tone-warning { background:var(--warning-soft); border-color:rgba(227,179,65,.35); }
+.next-step-banner.tone-success { background:var(--success-soft); border-color:rgba(63,185,80,.35); }
+.next-step-banner.tone-danger { background:var(--danger-soft); border-color:rgba(248,81,73,.35); }
+.next-step-banner.tone-info,.next-step-banner.tone-muted { background:var(--surface-alt); }
+.next-step-chip { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:600; border:1px solid var(--border); background:var(--surface-alt); color:var(--text-muted); margin-top:2px; }
+.next-step-chip.tone-primary { color:var(--accent); border-color:rgba(88,166,255,.35); background:var(--accent-soft); }
+.next-step-chip.tone-warning { color:var(--warning); border-color:rgba(227,179,65,.35); background:var(--warning-soft); }
+.next-step-chip.tone-success { color:var(--success); border-color:rgba(63,185,80,.35); background:var(--success-soft); }
+.next-step-chip.tone-danger { color:var(--danger); border-color:rgba(248,81,73,.35); background:var(--danger-soft); }
+@media (max-width: 768px) {
+  .grid-2 { grid-template-columns:1fr; }
+  .next-step-banner { flex-direction:column; align-items:stretch; }
+}

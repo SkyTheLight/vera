@@ -215,6 +215,7 @@ const vehicles = [
     { id: 'n8', role: 'customer', title: 'Reservation rejected', body: 'Your ZX-6R request was rejected. Check details for reason.', isRead: true, createdAt: day(-4, 8), link: '#/customer/reservations' }
   ];
 
+  const DEFAULT_DEPOSIT_AMOUNT = 5000;
   const DEFAULT_OVERTIME_SETTINGS = {
     tiers: { 1: 500, 2: 800, 3: 1000 },
     perHourAfterThird: 500,
@@ -303,10 +304,38 @@ const vehicles = [
     payments.push({id:'p-'+ex.id,reservationId:ex.id,paymentType:'rental',method:'GCash',amount:totalFee,proofDataUrl:'',status:'verified',submittedAt:new Date(new Date(ex.start).getTime()-4*3600000).toISOString(),verifiedBy:'Admin',rejectReason:''});
   }
 
-  // Demo customer identity records: no actual identification documents are seeded.
+  // Demo customer identity records.
   for (const customer of customers) {
     customer.profileImage = '';
     customer.identification = {
+      idType: '', idNumber: '', idImage: '', licenseNumber: '',
+      licenseExpiry: '', licenseFront: '', licenseBack: '',
+      verificationStatus: 'not_submitted', verifiedBy: null,
+      verifiedAt: null, rejectionReason: ''
+    };
+  }
+  // Default demo customer: verified and ready for booking/approval demos.
+  const demoReady = customers.find(c => c.id === 'c1');
+  if (demoReady) {
+    demoReady.identification = {
+      idType: 'LTO Driver License',
+      idNumber: 'D01-23-456789',
+      idImage: 'data:image/png;base64,AA==',
+      licenseNumber: 'N01-23-456789',
+      restrictionCode: 'A1',
+      licenseExpiry: '2030-12-31',
+      licenseFront: 'data:image/png;base64,AA==',
+      licenseBack: 'data:image/png;base64,AA==',
+      verificationStatus: 'verified',
+      verifiedBy: 'Admin',
+      verifiedAt: '2026-01-01T08:00:00+08:00',
+      rejectionReason: ''
+    };
+  }
+  // Keep at least one customer unverified/no license for license-gate/missing-badge demos.
+  const demoMissing = customers.find(c => c.id === 'c2');
+  if (demoMissing) {
+    demoMissing.identification = {
       idType: '', idNumber: '', idImage: '', licenseNumber: '',
       licenseExpiry: '', licenseFront: '', licenseBack: '',
       verificationStatus: 'not_submitted', verifiedBy: null,

@@ -75,3 +75,11 @@ V.E.R.A. is an **interactive prototype for demonstration and academic purposes**
 - **Booking scope:** Assistant can create only pending reservation requests for the current customer; it cannot approve, reject, start, complete, verify payments, or change vehicle/admin records.
 - **Navigation depends on rendered targets:** Highlighting retries briefly; if a target is unavailable in current state/role, it may not highlight.
 - **Date parsing is simple:** Best with `YYYY-MM-DD HH:MM` formats; natural language dates are limited.
+
+
+## Booking Redesign (prototype)
+- **License validation is client-side/in-memory only:** license upload and Restriction A/A1 gate are prototype checks; no document verification, OCR, or backend validation.
+- **Deposit is a single configurable setting:** `settings.depositAmount` defaults to 5000 and is shown in estimates/payment summaries; there is no separate deposit ledger/accounting system.
+- **Payment remains proof-upload only:** after approval, customer uploads GCash/Other proof for total to prepare (rental + deposit); no real payment gateway, no automatic reconciliation.
+- **Budget assistant is rule-based:** `recommendByBudget` uses existing availability/fee logic and current in-memory state; it does not reserve vehicles, does not auto-create reservations, and depends on user-provided dates.
+- **Prefill is in-memory:** "Book this" from assistant sets `state.ui.bookingPrefill` and is lost on refresh.

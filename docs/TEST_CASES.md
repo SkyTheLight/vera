@@ -63,7 +63,7 @@
 | Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
 |---|---|---|---|---|---|---|---|
 | AUTO-01 | JS syntax | Node installed | Run `node --check app.js data.js tests/unit.test.js` | No syntax errors | All checks exited 0 | PASS | Executed successfully. |
-| AUTO-02 | Unit tests (business rules/helpers) | Node installed | Run `node --test tests/unit.test.js` | All tests pass | 9 tests, 9 passed, 0 failed | PASS | Lightweight VM-based harness; no external dependencies. |
+| AUTO-02 | Unit tests (business rules/helpers) | Node installed | Run `node --test tests/unit.test.js` | All tests pass | 23 tests, 23 passed, 0 failed | PASS | Covers deposit math, recommendByBudget, getNextStepBanner, blocked-date range rejection, and prior suites. |
 | AUTO-03 | HTML/CSS basic validation | Files present | Inspect key document structure and CSS indicators | Valid structure markers and responsive rules present | `<!DOCTYPE html>`, `lang`, viewport, title present; CSS contains media queries and form hint styles | PASS | Basic structural checks (no external validator tool run). |
 | AUTO-04 | Console/network runtime sanity | App served and exercised | Observe browser console and request failures during tested flows | No console errors; no failed core requests in exercised flows | Console error checks returned no messages; app/assets loaded successfully in tested sessions | PASS | Network listing tool call in one execute context failed to return parseable data, but no runtime symptoms observed. |
 
@@ -117,3 +117,15 @@
 | OT-09 | Cleaning/refueling add-ons | 1h late + cleaning + refueling 350 | Compute overtime with options | Base 500 + cleaning 200 + refueling 350 = P1,050; breakdown fields present | P1,050 with breakdown | PASS | Unit test. |
 | OT-10 | Legacy settings safety | State missing settings.overtime | Compute overtime | Defaults applied; no crash | Defaults used, result correct | PASS | Unit test. |
 | OT-11 | UI breakdown | Admin completes late rental | Open complete modal, enter late actual return, toggle cleaning, enter refueling | Preview shows hours late, tier, base, cleaning, refueling, calculated/final total | Implemented in code; manual browser screenshot evidence not captured in this run | NOT TESTED | Code path present in `updateOvertimePreview`/`openCompleteModal`; requires manual UI confirmation. |
+
+## 10. Booking Redesign / Budget / Banner
+
+| Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
+|---|---|---|---|---|---|---|---|
+| BR-01 | Deposit math | App loaded | Compute fee and add `getDepositAmount()` | `total to prepare = rental fee + deposit`; deposit from single setting | Deposit helper returns setting value; total computed correctly | PASS | Unit test. |
+| BR-02 | recommendByBudget filtering/sorting | Vehicles with mixed availability/prices/conflicts | Call `recommendByBudget('8k', start,end)` | Only available non-conflicting vehicles with total<=budget; sorted price asc; includes rental+deposit totals | b1,b2 returned in order; unavailable/conflicting excluded | PASS | Unit test. |
+| BR-03 | Budget parsing Taglish/5k | - | Call with `5k`, `5,000`, `₱8,000` | Amount parsed correctly | Parsed to numeric budget | PASS | Unit test. |
+| BR-04 | Next-step banner states | Reservations/payments in each state | Call `getNextStepBanner` for pending/approved(no proof,pending,verified)/ongoing/completed/rejected/cancelled | Correct title/message/action per state | All states returned expected titles | PASS | Unit test. |
+| BR-05 | Blocked range rejection | Approved reservation blocks dates | `rangeCrossesBlocked` for crossing and non-crossing ranges | Crossing range true; non-crossing false | Correct booleans | PASS | Unit test; UI clears Flatpickr and shows toast. |
+| BR-06 | Booking form license gate | Customer missing license | Open vehicle detail booking | Submit disabled; upload license link shown | Implemented in render/submit checks | PASS | Code-reviewed/manual UI recommended. |
+| BR-07 | Booking prefill from assistant | Budget recommendation returned | Click Book action | Navigates to vehicle detail with date range prefilled | Implemented via in-memory `state.ui.bookingPrefill` | PASS | Code-reviewed/manual UI recommended. |

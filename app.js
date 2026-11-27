@@ -96,12 +96,18 @@
         const days = Math.max(1, Math.ceil(ms / 86400000));
         return { days, total: days * v.ratePerDay };
     }
+    const DEFAULT_DEPOSIT_AMOUNT = 5000;
     const DEFAULT_OVERTIME_SETTINGS = {
         tiers: { 1: 500, 2: 800, 3: 1000 },
         perHourAfterThird: 500,
         fullDayAfterHours: 6,
         cleaningFee: 200
     };
+
+    function getDepositAmount() {
+        const v = Number(state?.settings?.depositAmount);
+        return Number.isFinite(v) && v >= 0 ? v : DEFAULT_DEPOSIT_AMOUNT;
+    }
 
     function getOvertimeSettings() {
         const s = state && state.settings && state.settings.overtime ? state.settings.overtime : {};
@@ -478,258 +484,273 @@
         animation.oncancel = finish;
     }
 
-    function vehicleShowcasePane(vehicle, index, total, active, clone = false) {
-        const unavailable = ['maintenance', 'malfunction'].includes(vehicle.status);
-        return `
-            <div class="showcase-slide" ${clone ? '' : `data-real-index="${index}"`}
-                aria-hidden="${!active}" ${active ? '' : 'inert'}>
-                <div class="showcase-image">
-                    ${vehicleImage(vehicle)}
-                    <div class="showcase-counter">${index + 1} / ${total}</div>
-                </div>
-                <div class="showcase-details">
-                    <div class="showcase-category">${esc(vehicle.displacement)}cc CLASS</div>
-                    <h1 class="showcase-name">${esc(vehicle.name)}</h1>
-                    <p class="muted">${esc(vehicle.brand)} · ${esc(vehicle.year)}</p>
-                    <div class="mt-3">${statusBadge(vehicle.status)}</div>
-                    <div class="showcase-specs">
-                        <div><span>Transmission</span><strong>${esc(vehicle.transmission)}</strong></div>
-                        <div><span>Color</span><strong>${esc(vehicle.color)}</strong></div>
-                        <div><span>Capacity</span><strong>${esc(vehicle.seats)} seats</strong></div>
-                        <div><span>Plate number</span><strong>${esc(vehicle.plateNumber)}</strong></div>
-                    </div>
-                    <div class="divider"></div>
-                    <div class="showcase-price">${fmtPHP(vehicle.ratePerDay)} <span>/ day</span></div>
-                    <p class="muted small">${fmtPHP(vehicle.ratePerHour)} / hour overtime rate</p>
-                    <div class="mt-3">
-                        ${unavailable ? '<button class="btn btn-block" disabled>Currently unavailable</button>' :
-                            `<a class="btn btn-primary btn-block" href="#/customer/vehicle/${esc(vehicle.id)}">View details & reserve</a>`}
-                    </div>
-                </div>
-            </div>`;
+    function vehicleAvailabilityLabel(v) {
+        if (!v) return { label: 'Unknown', tone: 'muted', bookable: false };
+        if (v.status === 'available') return { label: 'Available', tone: 'success', bookable: true };
+        if (v.status === 'rented') return { label: 'Rented', tone: 'warning', bookable: false };
+        if (v.status === 'maintenance' || v.status === 'malfunction') return { label: 'Maintenance', tone: 'danger', bookable: false };
+        return { label: String(v.status || 'Unknown'), tone: 'muted', bookable: false };
     }
 
-    
-function renderCustomerVehicles() {
-    const query = (state.ui.q || '').toLowerCase();
-    const displacement = state.ui.displacementFilter || 'all';
-
-    const vehicles = state.vehicles.filter(vehicle => {
-        const search = [
-            vehicle.name,
-            vehicle.brand,
-            vehicle.model,
-            vehicle.plateNumber
-        ].join(' ').toLowerCase();
-
-        return search.includes(query) &&
-            (
-                displacement === 'all' ||
-                String(vehicle.displacement) === displacement
-            );
-    });
-
-    const total = vehicles.length;
-
-    const index = total
-        ? Math.max(0, Math.min(state.ui.vehicleSlide || 0, total - 1))
-        : 0;
-
-    state.ui.vehicleSlide = index;
-
-    const displacementOptions = ['400', '600', '1000'];
-
-    mount(`
+    function renderCustomerVehicles() {
+        const query = (state.ui.q || '').toLowerCase();
+        const displacement = state.ui.displacementFilter || 'all';
+        const chips = [['all','All'],['400','400cc'],['600','600cc'],['1000','1000cc']];
+        const vehicles = state.vehicles.filter(vehicle => {
+            const search = [vehicle.name, vehicle.brand, vehicle.model, vehicle.plateNumber].join(' ').toLowerCase();
+            return search.includes(query) && (displacement === 'all' || String(vehicle.displacement) === displacement);
+        });
+        mount(`
         <div class="page-header">
-            <div>
-                <h1 class="page-title">Find your next ride</h1>
-                <p class="page-desc">
-                    Explore our motorcycle fleet and reserve your ride.
-                </p>
-            </div>
+          <div>
+            <h1 class="page-title">Choose a motorcycle</h1>
+            <p class="page-desc">Step 1: Select an available model. Non-available vehicles are visible but cannot be booked.</p>
+          </div>
         </div>
-
-        <div class="toolbar">
-            <input
-                id="vehicleSearch"
-                class="input grow"
-                placeholder="Search motorcycles..."
-                value="${esc(state.ui.q || '')}"
-                oninput="App.setUI('vehicleSlide', 0);
-                         App.searchVehicles(this)"
-            >
-
-            <select
-                class="select"
-                aria-label="Displacement"
-                onchange="App.setUI('displacementFilter', this.value);
-                          App.setUI('vehicleSlide', 0);
-                          App.render()"
-            >
-                <option value="all">All displacements</option>
-
-                ${displacementOptions.map(item => `
-                    <option
-                        value="${item}"
-                        ${displacement === item ? 'selected' : ''}
-                    >
-                        ${item}cc Class
-                    </option>
-                `).join('')}
-            </select>
+        <div class="toolbar" style="gap:10px;flex-wrap:wrap;">
+          <input id="vehicleSearch" class="input grow" placeholder="Search motorcycles..." value="${esc(state.ui.q || '')}" oninput="App.searchVehicles(this)">
+          <div class="cc-chips" role="group" aria-label="Engine displacement filter">
+            ${chips.map(([k,l]) => `<button type="button" class="cc-chip ${displacement===k?'active':''}" onclick="App.setUI('displacementFilter','${k}'); App.render()">${l}</button>`).join('')}
+          </div>
         </div>
-
-        ${total ? `
-            <div class="showcase-wrapper">
-
-                <button
-                    class="slide-arrow slide-prev"
-                    aria-label="Previous motorcycle"
-                    onclick="App.switchVehicleSlide(
-                        'prev',
-                        (
-                            Number(document.getElementById('vehicleTrack')
-                                .dataset.activeIndex || 0)
-                            + ${total} - 1
-                        ) % ${total}
-                    )"
-                    ${total === 1 ? 'disabled' : ''}
-                >
-                    &#10094;
-                </button>
-
-                <section
-                    class="vehicle-showcase"
-                    aria-label="Motorcycle carousel"
-                >
-                    <div class="showcase-viewport">
-
-                        <div
-                            id="vehicleTrack"
-                            class="showcase-track"
-                            data-total="${total}"
-                            data-active-index="${index}"
-                            style="transform:translate3d(${-100 * (index + 1)}%,0,0)"
-                        >
-                            ${vehicleShowcasePane(
-                                vehicles[total - 1],
-                                total - 1,
-                                total,
-                                false,
-                                true
-                            )}
-
-                            ${vehicles.map((vehicle, i) =>
-                                vehicleShowcasePane(
-                                    vehicle,
-                                    i,
-                                    total,
-                                    i === index
-                                )
-                            ).join('')}
-
-                            ${vehicleShowcasePane(
-                                vehicles[0],
-                                0,
-                                total,
-                                false,
-                                true
-                            )}
-                        </div>
-
-                    </div>
-
-                    <div class="slide-dots">
-
-                        ${vehicles.map((item, position) => `
-                            <button
-                                class="slide-dot ${position === index ? 'active' : ''}"
-                                aria-label="Show ${esc(item.name)} ${esc(item.year)}"
-                                aria-current="${position === index}"
-                                onclick="App.switchVehicleSlide('direct', ${position})"
-                            ></button>
-                        `).join('')}
-
-                    </div>
-                </section>
-
-                <button
-                    class="slide-arrow slide-next"
-                    aria-label="Next motorcycle"
-                    onclick="App.switchVehicleSlide(
-                        'next',
-                        (
-                            Number(document.getElementById('vehicleTrack')
-                                .dataset.activeIndex || 0) + 1
-                        ) % ${total}
-                    )"
-                    ${total === 1 ? 'disabled' : ''}
-                >
-                    &#10095;
-                </button>
-
-                <span
-                    class="carousel-announcement"
-                    aria-live="polite"
-                >
-                    Motorcycle ${index + 1} of ${total}
-                </span>
-
-            </div>
-        ` : `
-            <div class="empty">
-                <div class="empty-title">
-                    No motorcycles found
+        ${vehicles.length ? `<div class="vehicle-grid" data-ai-target="vehicle-list">
+          ${vehicles.map(v => {
+            const a = vehicleAvailabilityLabel(v);
+            const bookable = a.bookable;
+            return `<div class="vehicle-card ${bookable ? '' : 'is-unavailable'}">
+              <div class="vehicle-card-media">${vehicleImage(v)}<span class="availability-pill tone-${a.tone}">${a.label}</span></div>
+              <div class="vehicle-card-body">
+                <div class="vehicle-card-top"><div><div class="vehicle-card-name">${esc(v.brand)} ${esc(v.name)}</div><div class="muted small">${esc(v.year)} • ${esc(v.displacement)}cc • ${esc(v.transmission)}</div></div><div class="vehicle-card-rate">${fmtPHP(v.ratePerDay)}<span>/day</span></div></div>
+                <div class="vehicle-card-meta"><span>Plate: <span class="mono">${esc(v.plateNumber)}</span></span><span>${esc(v.color)}</span></div>
+                <div class="mt-2">
+                  ${bookable
+                    ? `<a class="btn btn-primary btn-block" href="#/customer/vehicle/${v.id}" data-ai-target="book-vehicle-${esc(v.id)}">View details & reserve</a>`
+                    : `<button class="btn btn-block" disabled aria-disabled="true">Not available for booking</button>`}
                 </div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>` : `<div class="empty"><div class="empty-title">No vehicles found</div><div>Try a different search or displacement filter.</div></div>`}
+        `);
+        const s = $('#vehicleSearch');
+        if (s && s.value) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+    }
 
-                Try adjusting your search or filters.
+    function isVehicleBookable(v) { return !!v && !['maintenance', 'malfunction', 'rented'].includes(v.status); }
+    function getBlockedRanges(vehicleId, excludeId) {
+        return reservationsForVehicle(vehicleId)
+            .filter(r => (r.status === 'approved' || r.status === 'ongoing') && r.id !== excludeId)
+            .map(r => ({ from: new Date(r.start), to: new Date(r.end), start: r.start, end: r.end }));
+    }
+    function rangeCrossesBlocked(start, end, blockedRanges) {
+        const s = new Date(start), e = new Date(end);
+        if (!Number.isFinite(s.getTime()) || !Number.isFinite(e.getTime()) || e <= s) return false;
+        return (blockedRanges || []).some(b => overlaps(s, e, b.from, b.to));
+    }
+    function buildFlatpickrDisable(vehicleId, excludeId) {
+        const blocked = getBlockedRanges(vehicleId, excludeId);
+        const disable = blocked.map(b => ({ from: b.from, to: b.to }));
+        const v = getVehicle(vehicleId);
+        if (v && ['maintenance', 'malfunction'].includes(v.status)) disable.push(() => true);
+        return { disable, blockedRanges: blocked };
+    }
+    function manilaDateTimeToISO(dateStr, timeStr) {
+        if (!dateStr || !timeStr) return null;
+        const iso = new Date(`${dateStr}T${timeStr}:00+08:00`);
+        return Number.isFinite(iso.getTime()) ? iso.toISOString() : null;
+    }
+    function bookingHasLicense(cust) {
+        const d = cust?.identification || {};
+        return !!(d.licenseNumber && d.licenseFront && d.licenseBack && (d.licenseExpiry || '') >= todayKey());
+    }
+
+    function getLicenseStatus(customer, reservation) {
+        const d = customer?.identification || {};
+        const hasLicense = !!(d.licenseNumber || d.licenseFront || d.licenseBack || d.licenseExpiry);
+        if (!hasLicense || !d.licenseNumber) return { status: 'Missing', tone: 'danger', detail: 'No license on file' };
+        const expiry = String(d.licenseExpiry || '').slice(0, 10);
+        if (!expiry) return { status: 'Missing', tone: 'danger', detail: 'License expiry missing' };
+        const today = todayKey();
+        const resEnd = reservation?.end ? toManilaDateKey(reservation.end) : null;
+        if (expiry < today) return { status: 'Expired', tone: 'danger', detail: `Expired ${expiry}` };
+        if (resEnd && expiry < resEnd) return { status: 'Expires before return', tone: 'warning', detail: `Expires ${expiry}, return ${resEnd}` };
+        return { status: 'Valid', tone: 'success', detail: resEnd ? `Valid through return (${expiry})` : `Valid until ${expiry}` };
+    }
+
+    function adminReservationDocumentsCard(r, c) {
+        const d = c?.identification || {};
+        const idStatus = identityStatus(c || {});
+        const verified = idStatus === 'verified';
+        const lic = getLicenseStatus(c, r);
+        const restriction = /A1/i.test(String(d.licenseNumber || '') + ' ' + String(d.idType || '')) ? 'A / A1' : (d.licenseNumber ? 'A / A1' : '-');
+        // Reuse existing fields: we do not have a separate restriction field; show A / A1 from seeded/demo data context if present in license text, else default A/A1 when license exists.
+        const restrictionDisplay = d.restrictionCode || ((/a1/i.test(String(d.licenseNumber||'')) || /a1/i.test(String(d.idType||''))) ? 'A1' : (d.licenseNumber ? 'A' : '-'));
+        return reservationPanel('Customer documents', `
+            <div class="kv">
+                <div class="k">Customer</div><div class="v">${esc(r.customerName || c?.name || '-')}</div>
+                <div class="k">Identity status</div><div class="v"><span class="status status-${verified ? 'verified' : 'pending'}">${verified ? 'Verified' : 'Not verified'}</span></div>
+                <div class="k">LTO license number</div><div class="v mono">${esc(d.licenseNumber || '-')}</div>
+                <div class="k">Restriction Code</div><div class="v">${esc(restrictionDisplay || '-')}</div>
+                <div class="k">License expiry</div><div class="v">${esc(d.licenseExpiry || '-')}</div>
+                <div class="k">License status</div><div class="v"><span class="status status-${lic.tone === 'success' ? 'verified' : lic.tone === 'warning' ? 'pending' : 'rejected'}">${esc(lic.status)}</span> <span class="small muted">${esc(lic.detail)}</span></div>
             </div>
-        `}
-    `);
-}
+            <p class="small muted mt-2">Read-only information for approval review. Approval rules remain unchanged.</p>
+        `);
+    }
+    function licenseUploadTarget() { return '#/customer/history'; }
 
+    function parseBudgetAmount(input) {
+        if (input == null) return null;
+        if (typeof input === 'number' && Number.isFinite(input)) return input;
+        let s = String(input).toLowerCase().trim();
+        s = s.replace(/[₱,\s]/g, '');
+        const k = s.match(/^(\d+(?:\.\d+)?)k$/);
+        if (k) return Number(k[1]) * 1000;
+        const m = s.match(/(\d+(?:\.\d+)?)/);
+        if (!m) return null;
+        const n = Number(m[1]);
+        return Number.isFinite(n) ? n : null;
+    }
 
-    function buildCalendarHTML(vehicleId) {
-        const [year, monthNumber] = todayKey().split('-').map(Number);
-        const month = monthNumber - 1;
-        const base = new Date(Date.UTC(year, month, 1));
-        const firstDay = base.getUTCDay();
-        const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-        const booked = new Set();
-        reservationsForVehicle(vehicleId).filter(r => r.status === 'approved' || r.status === 'ongoing').forEach(r => {
-            const start = new Date(r.start);
-            const end = new Date(r.end);
-            for (let day = 1; day <= daysInMonth; day++) {
-                const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                const dayStart = new Date(`${key}T00:00:00+08:00`);
-                const dayEnd = new Date(dayStart.getTime() + 86400000);
-                if (overlaps(start, end, dayStart, dayEnd))
-                    booked.add(key);
+    function recommendByBudget(budget, start, end) {
+        const b = parseBudgetAmount(budget);
+        const deposit = getDepositAmount();
+        if (!Number.isFinite(b) || b <= 0) return { ok: false, reason: 'invalid_budget', deposit, budget: b, items: [] };
+        const startISO = start ? new Date(start).toISOString() : null;
+        const endISO = end ? new Date(end).toISOString() : null;
+        if (!startISO || !endISO || !Number.isFinite(new Date(startISO).getTime()) || !Number.isFinite(new Date(endISO).getTime()) || new Date(endISO) <= new Date(startISO)) {
+            return { ok: false, reason: 'missing_dates', deposit, budget: b, items: [] };
+        }
+        const items = [];
+        for (const v of (state.vehicles || [])) {
+            if (!isVehicleBookable(v)) continue;
+            const conflict = hasConflict(v.id, startISO, endISO);
+            if (conflict.conflict) continue;
+            const fee = computeFee(v.id, startISO, endISO);
+            if (!fee || !fee.days) continue;
+            const total = fee.total + deposit;
+            if (total <= b) items.push({
+                vehicleId: v.id, name: v.name, brand: v.brand, displacement: v.displacement,
+                ratePerDay: v.ratePerDay, days: fee.days, rentalFee: fee.total, deposit, total,
+                startISO, endISO
+            });
+        }
+        items.sort((a, b) => a.total - b.total || a.ratePerDay - b.ratePerDay || a.name.localeCompare(b.name));
+        return { ok: true, deposit, budget: b, startISO, endISO, items: items.slice(0, 5) };
+    }
+
+    function initBookingForm(v, opts = {}) {
+        const input = document.getElementById('dateRange');
+        if (!input || !window.flatpickr) return;
+        const { disable, blockedRanges } = buildFlatpickrDisable(v.id);
+        const prefill = opts.prefill;
+        const syncSelectedRange = (inst, selectedDates) => {
+            const msg = document.getElementById('conflictMsg');
+            if (msg) msg.innerHTML = '';
+            if (!selectedDates || selectedDates.length === 0) {
+                document.getElementById('start').value = '';
+                document.getElementById('end').value = '';
+                updateFeePreview(v.id);
+                return;
+            }
+            let s = selectedDates[0];
+            let e = selectedDates.length === 2 ? selectedDates[1] : selectedDates[0];
+            if (e < s) [s, e] = [e, s];
+            const startDate = inst.formatDate(s, 'Y-m-d');
+            const endDate = inst.formatDate(e, 'Y-m-d');
+            const pickup = document.getElementById('pickupTime')?.value || '09:00';
+            const ret = document.getElementById('returnTime')?.value || '09:00';
+            const startISO = manilaDateTimeToISO(startDate, pickup);
+            const endISO = manilaDateTimeToISO(endDate, ret);
+            if (!startISO || !endISO) {
+                document.getElementById('start').value = '';
+                document.getElementById('end').value = '';
+                updateFeePreview(v.id);
+                return;
+            }
+            if (rangeCrossesBlocked(startISO, endISO, blockedRanges)) {
+                inst.clear();
+                document.getElementById('start').value = '';
+                document.getElementById('end').value = '';
+                toast('Selected range crosses a blocked date. Please choose different dates.', 'error');
+                updateFeePreview(v.id);
+                return;
+            }
+            if (startDate === endDate && ret <= pickup) {
+                document.getElementById('start').value = startISO;
+                document.getElementById('end').value = endISO;
+                updateFeePreview(v.id);
+                return;
+            }
+            document.getElementById('start').value = startISO;
+            document.getElementById('end').value = endISO;
+            updateFeePreview(v.id);
+        };
+        const fp = window.flatpickr(input, {
+            mode: 'range',
+            dateFormat: 'Y-m-d',
+            minDate: 'today',
+            disable,
+            showMonths: window.innerWidth < 768 ? 1 : 2,
+            onChange: (selectedDates, _dateStr, inst) => syncSelectedRange(inst, selectedDates),
+            onClose: (selectedDates, _dateStr, inst) => {
+                if (selectedDates.length === 1) syncSelectedRange(inst, selectedDates);
             }
         });
-        const tk = todayKey();
-        const monthName = base.toLocaleString('en-PH', { month: 'long', year: 'numeric', timeZone: 'Asia/Manila' });
-        let cells = '';
-        ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(d => cells += `<div class="cal-cell cal-head">${d}</div>`);
-        for (let i = 0; i < firstDay; i++)
-            cells += `<div class="cal-cell cal-empty"></div>`;
-        for (let d = 1; d <= daysInMonth; d++) {
-            const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-            const isBooked = booked.has(key), isToday = key === tk;
-            cells += `<div class="cal-cell ${isBooked ? 'cal-booked' : 'cal-free'} ${isToday ? 'cal-today' : ''}" title="${isBooked ? 'Booked' : 'Available'}">${d}</div>`;
+        const syncTimes = () => {
+            const sel = fp.selectedDates || [];
+            if (sel.length >= 1) syncSelectedRange(fp, sel);
+            else updateFeePreview(v.id);
+        };
+        ['pickupTime','returnTime'].forEach(id => { const el = document.getElementById(id); if (el) { el.addEventListener('change', syncTimes); el.addEventListener('input', syncTimes); } });
+        state.ui.bookingPicker = fp;
+        if (prefill?.start && prefill?.end) {
+            try {
+                const s = new Date(prefill.start), e = new Date(prefill.end);
+                if (Number.isFinite(s.getTime()) && Number.isFinite(e.getTime())) {
+                    const pStart = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Manila',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(s);
+                    const pEnd = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Manila',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(e);
+                    const gs=k=>pStart.find(x=>x.type===k)?.value||'09'; const ge=k=>pEnd.find(x=>x.type===k)?.value||'09';
+                    const pickup = document.getElementById('pickupTime'); const ret = document.getElementById('returnTime');
+                    if (pickup) pickup.value = `${gs('hour')}:${gs('minute')}`;
+                    if (ret) ret.value = `${ge('hour')}:${ge('minute')}`;
+                    fp.setDate([s, e], true);
+                }
+            } catch (_) {}
+            state.ui.bookingPrefill = null;
         }
-        return `<div class="calendar"><div class="cal-header"><div class="cal-month">${esc(monthName)}</div><div class="cal-legend"><span><span class="cal-swatch free"></span>Available</span><span><span class="cal-swatch booked"></span>Booked</span></div></div><div class="cal-grid">${cells}</div></div>`;
+        updateFeePreview(v.id);
     }
+
+    function openOvertimeRulesModal() {
+        const s = getOvertimeSettings();
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Overtime rules</div><button class="icon-btn" onclick="App.closeModal()" aria-label="Close">&times;</button></div>
+          <div class="modal-body"><div class="kv">
+            <div class="k">1 hour late</div><div class="v">${fmtPHP(s.tiers[1])}</div>
+            <div class="k">2 hours late</div><div class="v">${fmtPHP(s.tiers[2])}</div>
+            <div class="k">3 hours late</div><div class="v">${fmtPHP(s.tiers[3])}</div>
+            <div class="k">4+ hours late</div><div class="v">${fmtPHP(s.tiers[3])} + ${fmtPHP(s.perHourAfterThird)}/hour after 3rd</div>
+            <div class="k">More than ${s.fullDayAfterHours} hours</div><div class="v">1 full-day rate (vehicle rate/day)</div>
+            <div class="k">Cleaning fee (add-on)</div><div class="v">${fmtPHP(s.cleaningFee)}</div>
+            <div class="k">Refueling fee (add-on)</div><div class="v">Admin-entered amount</div>
+          </div><p class="small muted mt-2">Hours are rounded up to the next whole hour.</p></div></div>`);
+    }
+
     function renderCustomerVehicleDetail(id) {
         const v = getVehicle(id);
         if (!v)
             return mount(`<div class="empty"><div class="empty-title">Vehicle not found</div><div><a href="#/customer/vehicles">Return to vehicles</a></div></div>`);
-        const blocked = v.status === 'maintenance' || v.status === 'malfunction';
-        const bookedRanges = reservationsForVehicle(id).filter(r => r.status === 'approved' || r.status === 'ongoing').sort((a, b) => new Date(a.start) - new Date(b.start));
+        const blockedVehicle = ['maintenance', 'malfunction'].includes(v.status);
+        const unavailable = !isVehicleBookable(v);
+        const cust = currentCustomer();
+        const hasLicense = bookingHasLicense(cust);
+        const deposit = getDepositAmount();
+        const bookedRanges = getBlockedRanges(id);
+        const prefill = state.ui.bookingPrefill && state.ui.bookingPrefill.vehicleId === id ? state.ui.bookingPrefill : null;
         mount(`
       <div style="margin-bottom:12px;"><a href="#/customer/vehicles" class="btn btn-ghost btn-sm" data-ai-target="browse-vehicles-link">&larr; Back to vehicles</a></div>
       <div class="page-header">
-        <div><h1 class="page-title">${esc(v.name)}</h1><p class="page-desc">${esc(v.brand)} ${esc(v.model)} · ${v.year} · ${esc(v.color)}</p></div>
+        <div><h1 class="page-title">${esc(v.name)}</h1><p class="page-desc">${esc(v.brand)} ${esc(v.model)} � ${v.year} � ${esc(v.color)}</p></div>
         <div>${statusBadge(v.status)}</div>
       </div>
       <div class="grid-3">
@@ -744,46 +765,61 @@ function renderCustomerVehicles() {
               <div class="k">Hourly rate</div><div class="v">${fmtPHP(v.ratePerHour)}</div>
             </div>
           </div></div>
-          <div class="panel"><div class="panel-header"><div class="panel-title">Availability</div></div><div class="panel-body">
-            ${buildCalendarHTML(v.id)}
-            <div class="small muted mt-2">${bookedRanges.length ? `<strong>Booked periods:</strong> ${bookedRanges.map(r => `${fmtDateShort(r.start)}–${fmtDateShort(r.end)}`).join('; ')}` : 'No approved or ongoing bookings this month.'}</div>
-          </div></div>
           <div class="panel"><div class="panel-header"><div class="panel-title">Booking rule: overlap prevention</div></div><div class="panel-body">
-            <p class="small muted mb-2">A request is blocked when its date range overlaps an approved or ongoing rental for the same vehicle.</p>
-            <div class="overlap-diagram">
-              <div class="range-bar"><div class="range-seg range-a">Existing</div><div class="range-seg range-b">Request</div><div class="range-seg range-overlap"></div></div>
-              <div class="overlap-legend"><span>Existing rental</span><span style="color:var(--danger);font-weight:500;">Overlap blocked</span><span>New request</span></div>
-            </div>
-            <div class="callout small mt-2"><span class="mono">newStart &lt; existingEnd &amp;&amp; newEnd &gt; existingStart</span><span class="muted"> (checked against approved/ongoing reservations)</span></div>
+            <p class="small muted mb-2">A request is blocked when its date range overlaps an approved or ongoing rental for the same vehicle, or the vehicle is under maintenance/malfunction.</p>
+            <div class="callout small"><span class="mono">newStart &lt; existingEnd &amp;&amp; newEnd &gt; existingStart</span></div>
+            <div class="small muted mt-2">${bookedRanges.length ? `<strong>Blocked periods:</strong> ${bookedRanges.map(r => `${fmtDateShort(r.start)}-${fmtDateShort(r.end)}`).join('; ')}` : 'No approved/ongoing bookings blocking this vehicle right now.'}</div>
           </div></div>
         </div>
-        <div>
-          <div class="panel"><div class="panel-header"><div class="panel-title">Request reservation</div></div><div class="panel-body">
-            ${blocked ? `<div class="callout danger">This vehicle is currently <strong>${esc(v.status)}</strong> and cannot accept reservation requests.</div>` : `
-            <form id="reqForm" data-ai-target="booking-form" onsubmit="App.submitReservation(event,'${v.id}')" class="stack">
-              <div class="field"><label class="field-label" for="start">Start date and time</label><input id="start" class="input" required type="datetime-local" name="start" onchange="App.updateFeePreview('${v.id}')"></div>
-              <div class="field"><label class="field-label" for="end">End date and time</label><input id="end" class="input" required type="datetime-local" name="end" onchange="App.updateFeePreview('${v.id}')"></div>
-              <div class="field"><label class="field-label" for="deliveryMethod">Delivery method</label>
-                <select id="deliveryMethod" name="deliveryMethod" class="select" required>
-                  <option value="">Select pickup and return option</option>
-                  ${DELIVERY_METHODS.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}
-                </select>
-                <div class="field-hint">Choose how the vehicle will be picked up and returned for this reservation.</div>
+        <div style="grid-column: span 2;">
+          <div class="panel"><div class="panel-header"><div class="panel-title">Book this vehicle</div></div><div class="panel-body">
+            ${blockedVehicle ? `<div class="callout danger">This vehicle is currently <strong>${esc(v.status)}</strong> and cannot accept reservation requests.</div>` : unavailable ? `<div class="callout warning">This vehicle is currently <strong>${esc(v.status)}</strong>. Please choose another available vehicle.</div>` : `
+            <form id="reqForm" data-ai-target="booking-form" onsubmit="App.submitReservation(event,'${v.id}')" class="stack booking-flow">
+              <div class="booking-step"><div class="step-head"><span class="step-num">1</span><div><div class="step-title">Choose model</div><div class="small muted">Selected: ${esc(v.brand)} ${esc(v.name)} (${esc(v.displacement)}cc)</div></div></div></div>
+
+              <div class="booking-step"><div class="step-head"><span class="step-num">2</span><div><div class="step-title">Dates + delivery/pickup</div><div class="small muted">Pick a start and end date. Blocked/conflicting dates are disabled.</div></div></div>
+                <div class="field"><label class="field-label" for="dateRange">Rental dates</label><input id="dateRange" class="input" type="text" placeholder="Select start date then end date" readonly required><div class="field-hint">One calendar range only. If a range crosses a blocked date, it will be cleared.</div></div>
+                <div class="grid-2">
+                  <div class="field"><label class="field-label" for="pickupTime">Pickup time</label><input id="pickupTime" class="input" type="time" value="09:00" required onchange="App.updateFeePreview('${v.id}')"></div>
+                  <div class="field"><label class="field-label" for="returnTime">Return time</label><input id="returnTime" class="input" type="time" value="09:00" required onchange="App.updateFeePreview('${v.id}')"></div>
+                </div>
+                <input type="hidden" id="start" name="start"><input type="hidden" id="end" name="end">
+                <div id="rangeSummary" class="callout small muted">Select a date range to see duration.</div>
+                <div class="field"><label class="field-label" for="deliveryMethod">Delivery method</label>
+                  <select id="deliveryMethod" name="deliveryMethod" class="select" required>
+                    <option value="">Select pickup and return option</option>
+                    ${DELIVERY_METHODS.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}
+                  </select>
+                  <div class="field-hint">Required. Choose how the vehicle will be picked up and returned.</div>
+                </div>
               </div>
-              <label class="field" style="display:flex;gap:10px;align-items:flex-start"><input id="trackingConsent" name="trackingConsent" type="checkbox" required style="margin-top:3px"><span class="small muted">I agree the vehicle may be tracked by GPS during my rental period.</span></label>
-              <div id="feePreview" class="callout info small">Select start and end dates to calculate the estimated fee.</div>
-              <div id="conflictMsg"></div>
-              <button class="btn btn-primary btn-block" type="submit" data-ai-target="booking-submit">Submit reservation request</button>
-              <p class="small muted">Requests are submitted as <strong>Pending</strong> until reviewed by the administrator.</p>
+
+              <div class="booking-step"><div class="step-head"><span class="step-num">3</span><div><div class="step-title">Live estimated price</div><div class="small muted">Updates when dates change. Fees use existing compute logic.</div></div></div>
+                <div id="feePreview" class="callout info small">Select start and end dates to calculate the estimated fee.</div>
+                <div id="conflictMsg"></div>
+                <button type="button" class="link-btn small" onclick="App.openOvertimeRulesModal()">View overtime rules</button>
+              </div>
+
+              <div class="booking-step"><div class="step-head"><span class="step-num">4</span><div><div class="step-title">License check</div><div class="small muted">LTO license (Restriction Code A/A1) required before submit.</div></div></div>
+                ${hasLicense ? `<div class="callout success small">License on file. You can proceed to review and confirm.</div>` : `<div class="callout danger small"><strong>License required.</strong> Upload your LTO license (Restriction Code A/A1) in your profile before submitting. <a href="${licenseUploadTarget()}" data-ai-target="upload-license-link">Upload license in Account</a></div>`}
+              </div>
+
+              <div class="booking-step"><div class="step-head"><span class="step-num">5</span><div><div class="step-title">Review and confirm</div><div class="small muted">No payment is collected at this stage.</div></div></div>
+                <div id="reviewSummary" class="callout small muted">Complete the steps above to review your booking.</div>
+                <label class="field" style="display:flex;gap:10px;align-items:flex-start"><input id="trackingConsent" name="trackingConsent" type="checkbox" required style="margin-top:3px"><span class="small muted">I agree the vehicle may be tracked by GPS during my rental period.</span></label>
+                <button class="btn btn-primary btn-block" type="submit" data-ai-target="booking-submit" ${hasLicense ? '' : 'disabled'}>Submit reservation request</button>
+                <p class="small muted">Requests are submitted as <strong>Pending</strong> until reviewed by the administrator. No payment prompt at this stage.</p>
+              </div>
             </form>`}
           </div></div>
         </div>
       </div>
     `);
+        if (!blockedVehicle && !unavailable) initBookingForm(v, { prefill });
     }
+
     // ---------- Customer: Reservations ----------
     function renderCustomerReservations() {
-        const cust = currentCustomer();
         const tab = state.ui.resTab || 'all';
         const mine = state.reservations.filter(r => ownsReservation(r)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         const list = tab === 'all' ? mine : mine.filter(r => r.status === tab);
@@ -794,10 +830,11 @@ function renderCustomerVehicles() {
       ${list.length ? `<div class="stack">${list.map(r => {
             const v = getVehicle(r.vehicleId);
             const p = getPaymentByReservation(r.id);
+            const banner = getNextStepBanner(r, state.payments);
             return `<div class="list-row">
           <div class="list-row-main">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">${vehicleMark(v)}<div><div class="list-row-title"><a href="#/customer/reservation/${r.id}">${esc(v ? v.name : r.vehicleId)}</a></div><div class="list-row-meta">${fmtDateShort(r.start)} to ${fmtDateShort(r.end)} · ${fmtPHP(r.totalFee + (r.overtimeFee || 0))}${r.overtimeFee ? ' (incl. overtime)' : ''}</div><div class="list-row-meta">Delivery: ${esc(getDeliveryMethod(r))}</div></div></div>
-            ${timelineHTML(r.status)}
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">${vehicleMark(v)}<div><div class="list-row-title"><a href="#/customer/reservation/${r.id}">${esc(v ? v.name : r.vehicleId)}</a></div><div class="list-row-meta">${fmtDateShort(r.start)} to ${fmtDateShort(r.end)} � ${fmtPHP(r.totalFee + (r.overtimeFee || 0))}${r.overtimeFee ? ' (incl. overtime)' : ''}</div><div class="list-row-meta">Delivery: ${esc(getDeliveryMethod(r))}</div></div></div>
+            <div class="next-step-chip tone-${esc(banner.tone)}">${esc(banner.title)}</div>
             ${p && r.status === 'approved' ? `<div class="small muted mt-2">Payment: ${statusBadge(p.status)}</div>` : ''}
           </div>
           <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
@@ -814,6 +851,31 @@ function renderCustomerVehicles() {
     }
 
     // ---------- Shared reservation components ----------
+    function getNextStepBanner(r, payments = state.payments || []) {
+        if (!r) return { tone:'info', title:'Reservation not found', message:'', action:null };
+        const p = (payments || []).filter(x => x && x.reservationId === r.id).sort((a,b)=>new Date(b.submittedAt||0)-new Date(a.submittedAt||0))[0] || null;
+        if (r.status === 'pending') return { tone:'warning', title:'Waiting for admin approval', message:'Your request was submitted. Please wait for admin approval. You will be notified.', action:null, payment:p };
+        if (r.status === 'approved') {
+            if (!p || p.status === 'rejected') return { tone:'primary', title:'Approved! Pay now', message:p?.status==='rejected' ? 'Your previous proof was rejected. Please upload a new payment proof.' : 'Your reservation is approved. Upload payment proof to continue.', action:{href:`#/customer/reservation/${r.id}/pay`,label:'Pay now'}, payment:p };
+            if (p.status === 'pending') return { tone:'info', title:'Payment submitted. Waiting for verification', message:'Your payment proof was submitted and is awaiting admin verification.', action:null, payment:p };
+            if (p.status === 'verified') return { tone:'success', title:'Ready for pickup / delivery', message:'Payment verified. Your rental is ready for pickup or delivery as scheduled.', action:null, payment:p };
+        }
+        if (r.status === 'ongoing') return { tone:'info', title:'Rental in progress', message:`Return time: ${fmtDate(r.end, { time: true })}.`, action:null, payment:p };
+        if (r.status === 'completed') {
+            const refund = r.refund?.status ? ` Refund: ${r.refund.status}.` : '';
+            return { tone:'success', title:'Completed', message:`This rental is completed.${refund}`, action:null, payment:p };
+        }
+        if (r.status === 'rejected') return { tone:'danger', title:'Reservation rejected', message:r.rejectReason || 'The admin rejected this reservation.', action:null, payment:p };
+        if (r.status === 'cancelled') return { tone:'muted', title:'Reservation cancelled', message:r.cancelReason || 'This reservation was cancelled.', action:null, payment:p };
+        return { tone:'info', title:'Reservation update', message:`Status: ${r.status}`, action:null, payment:p };
+    }
+
+    function nextStepBannerHTML(r, payments = state.payments || [], compact = false) {
+        const b = getNextStepBanner(r, payments);
+        const action = b.action ? `<a class="btn btn-sm ${b.tone==='primary'?'btn-primary':''}" href="${esc(b.action.href)}">${esc(b.action.label)}</a>` : '';
+        return `<div class="next-step-banner tone-${esc(b.tone)} ${compact?'compact':''}" data-ai-target="next-step-banner"><div><div class="next-step-title">${esc(b.title)}</div>${compact?'':`<div class="next-step-msg">${esc(b.message)}</div>`}</div>${action?`<div class="next-step-action">${action}</div>`:''}</div>`;
+    }
+
     function reservationPanel(title, body) {
         return `
             <div class="panel">
@@ -832,6 +894,8 @@ function renderCustomerVehicles() {
         const billableDays = Math.ceil(duration / 86400000);
         const rental = Number(r.totalFee || 0);
         const overtime = Number(r.overtimeFee || 0);
+        const deposit = getDepositAmount();
+        const totalToPrepare = rental + deposit;
 
         const schedule = (label, date) => `
             <div class="schedule-card">
@@ -846,8 +910,8 @@ function renderCustomerVehicles() {
                 <span class="muted small">${label}</span>
                 <strong>${esc(value)}</strong>
             </div>`;
-        const price = (label, amount) => `
-            <div class="reservation-price-row"><span>${label}</span><strong>${fmtPHP(amount)}</strong></div>`;
+        const price = (label, amount, sub='') => `
+            <div class="reservation-price-row"><span>${label}${sub?` <span class="muted small">${esc(sub)}</span>`:''}</span><strong>${fmtPHP(amount)}</strong></div>`;
 
         return `
             <div class="reservation-card">
@@ -858,14 +922,14 @@ function renderCustomerVehicles() {
                     <div class="reservation-vehicle-image">${v ? vehicleImage(v) : ''}</div>
                     <div class="reservation-vehicle-info">
                         <h2>${esc(v?.name || 'Unknown vehicle')}</h2>
-                        <p class="muted">${esc(v?.brand || '')} · ${esc(displacementLabel(v?.displacement))}</p>
-                        <span class="reservation-plate">${esc(v?.plateNumber || '—')}</span>
+                        <p class="muted">${esc(v?.brand || '')} � ${esc(displacementLabel(v?.displacement))}</p>
+                        <span class="reservation-plate">${esc(v?.plateNumber || '-')}</span>
                     </div>
                 </div>
                 <section class="reservation-section">
                     <h3>Rental schedule</h3>
                     <div class="reservation-schedule">${schedule('Pickup', r.start)}${schedule('Return', r.end)}</div>
-                    <div class="reservation-duration">${days} day(s), ${hours} hour(s)${remainder ? `, ${remainder} min` : ''} · ${billableDays} billable day(s)</div>
+                    <div class="reservation-duration">${days} day(s), ${hours} hour(s)${remainder ? `, ${remainder} min` : ''} � ${billableDays} billable day(s)</div>
                 </section>
                 <section class="reservation-section">
                     <h3>Delivery arrangements</h3>
@@ -873,8 +937,9 @@ function renderCustomerVehicles() {
                 </section>
                 <section class="reservation-section">
                     <h3>Payment breakdown</h3>
-                    ${price('Rental fee', rental)}${price('Overtime fee', overtime)}${r.refund?.amount ? price('Refund', -r.refund.amount) : ''}
-                    <div class="reservation-total"><span>Total amount</span><strong>${fmtPHP(rental + overtime - (r.refund?.amount || 0))}</strong></div>
+                    ${price('Rental fee', rental)}${price('Security deposit', deposit, '(Refundable)')}${price('Overtime fee', overtime)}${r.refund?.amount ? price('Refund', -r.refund.amount) : ''}
+                    <div class="reservation-total"><span>Total to prepare</span><strong>${fmtPHP(totalToPrepare + overtime - (r.refund?.amount || 0))}</strong></div>
+                    <div class="small muted mt-2">Rental fee + refundable security deposit. Overtime/refunds applied when applicable.</div>
                 </section>
                 ${r.actualReturn ? `<section class="reservation-section"><h3>Actual return</h3><p>${fmtDate(r.actualReturn, { time: true })}</p></section>` : ''}
                 ${r.rejectReason ? `<section class="reservation-section"><div class="callout danger"><strong>Rejection reason</strong><p>${esc(r.rejectReason)}</p></div></section>` : ''}
@@ -903,9 +968,12 @@ function renderCustomerVehicles() {
                     </div>` : ''}
                 ${!admin && r.status === 'approved' && p.status === 'rejected' ? `<a class="btn btn-primary btn-block mt-3" href="${payLink}" data-ai-target="upload-payment-proof">Resubmit payment proof</a>` : ''}`;
         } else if (!admin && r.status === 'approved') {
+            const due = Number(r.totalFee || 0) + getDepositAmount();
             body = `
                 <p class="callout info small mb-3">No payment proof has been submitted.</p>
-                <div class="reservation-price-row"><span>Amount due</span><strong>${fmtPHP(r.totalFee)}</strong></div>
+                <div class="reservation-price-row"><span>Rental fee</span><strong>${fmtPHP(r.totalFee)}</strong></div>
+                <div class="reservation-price-row"><span>Security deposit <span class="muted small">(Refundable)</span></span><strong>${fmtPHP(getDepositAmount())}</strong></div>
+                <div class="reservation-price-row"><span>Total to prepare</span><strong>${fmtPHP(due)}</strong></div>
                 <a class="btn btn-primary btn-block mt-3" href="${payLink}" data-ai-target="upload-payment-proof">Upload payment proof</a>`;
         } else {
             body = `<p class="small muted">${!admin && r.status === 'pending' ? 'Payment proof can be uploaded once the reservation is approved.' : 'No payment proof submitted.'}</p>`;
@@ -943,6 +1011,7 @@ function renderCustomerVehicles() {
                     <div class="k">Customer since</div><div class="v">${fmtDateShort(customer?.joinedAt || r.createdAt)}</div>
                 </div>
             </div>`) : '';
+        const documentsPanel = (admin && state.role === 'admin') ? adminReservationDocumentsCard(r, customer) : '';
         const notes = admin ? reservationPanel('Internal notes', `
             <form onsubmit="App.saveAdminNotes(event,'${r.id}')">
                 <textarea id="adminNotes" class="textarea" rows="3" aria-label="Internal notes" placeholder="Add a note for internal reference">${esc(r.adminNotes || '')}</textarea>
@@ -958,12 +1027,13 @@ function renderCustomerVehicles() {
             </form>`) : '';
         mount(`
             <div class="mb-3"><a href="${back}" class="btn btn-ghost btn-sm" data-ai-target="my-reservations-link">&larr; Back to reservations</a></div>
+            ${!admin ? nextStepBannerHTML(r, state.payments) : ''}
             <div class="page-header">
                 <div><h1 class="page-title">Reservation ${esc(r.id.toUpperCase())}</h1><p class="page-desc">${esc(admin ? r.customerName + ' · ' + (v?.name || 'Vehicle') : v?.name || 'Vehicle')}</p></div>
                 ${statusBadge(r.status)}
             </div>
             <div class="reservation-layout">
-                <div class="reservation-main">${reservationDetailsCard(r, v)}${customerPanel}${notes}</div>
+                <div class="reservation-main">${reservationDetailsCard(r, v)}${customerPanel}${documentsPanel}${notes}</div>
                 <div class="reservation-sidebar">
                     ${reservationPaymentPanel(r, p, admin)}
                     ${overtimePanel(r, admin)}
@@ -1999,26 +2069,51 @@ function renderAdminVehicles() {
     }
     function updateFeePreview(vehicleId) {
         const form = $('#reqForm');
-        if (!form)
-            return;
+        if (!form) return;
         const start = form.start.value, end = form.end.value;
-        const box = $('#feePreview'), msg = $('#conflictMsg');
-        if (msg)
-            msg.innerHTML = '';
+        const box = $('#feePreview'), msg = $('#conflictMsg'), summary = $('#rangeSummary'), review = $('#reviewSummary');
+        const deposit = getDepositAmount();
+        if (msg) msg.innerHTML = '';
         if (!start || !end) {
-            box.className = 'callout info small';
-            box.innerHTML = 'Select start and end dates to calculate the estimated fee.';
+            if (box) { box.className = 'callout info small'; box.innerHTML = 'Select start and end dates to calculate the estimated fee.'; }
+            if (summary) { summary.className = 'callout small muted'; summary.textContent = 'Select a date range to see duration.'; }
+            if (review) { review.className = 'callout small muted'; review.textContent = 'Complete the steps above to review your booking.'; }
             return;
         }
-        if (new Date(end) <= new Date(start)) {
-            box.className = 'callout danger small';
-            box.innerHTML = 'End date and time must be after the start.';
+        const sDate = new Date(start), eDate = new Date(end);
+        if (!Number.isFinite(sDate.getTime()) || !Number.isFinite(eDate.getTime()) || eDate <= sDate) {
+            const sameDay = Number.isFinite(sDate.getTime()) && Number.isFinite(eDate.getTime()) && start.slice(0,10) === end.slice(0,10);
+            const msgTxt = sameDay ? 'For a same-day rental, return time must be later than pickup time.' : 'End date/time must be after start date/time.';
+            if (box) { box.className = 'callout danger small'; box.innerHTML = msgTxt; }
+            if (review) { review.className = 'callout small muted'; review.textContent = 'Fix the selected times to review your booking.'; }
+            const submit = form.querySelector('button[type="submit"]');
+            if (submit) submit.disabled = true;
             return;
         }
-        const { days, total } = computeFee(vehicleId, start + '+08:00', end + '+08:00');
-        box.className = 'callout small';
-        box.innerHTML = `<strong>Estimated rental:</strong> ${days} day(s) × daily rate = <strong>${fmtPHP(total)}</strong><div class="muted" style="margin-top:4px;">Overtime, if any, is calculated at return based on the hourly rate.</div>`;
-        const conflict = hasConflict(vehicleId, new Date(start + '+08:00').toISOString(), new Date(end + '+08:00').toISOString());
+        const submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = !bookingHasLicense(currentCustomer());
+        const { days, total } = computeFee(vehicleId, start, end);
+        const grand = total + deposit;
+        if (summary) {
+            summary.className = 'callout small';
+            summary.innerHTML = `<strong>Selected range:</strong> ${fmtDateShort(start)} – ${fmtDateShort(end)} • ${days} day(s)`;
+        }
+        if (box) {
+            box.className = 'callout small';
+            box.innerHTML = `
+              <div class="kv">
+                <div class="k">Rental fee</div><div class="v">${days} day(s) × ${fmtPHP(getVehicle(vehicleId)?.ratePerDay||0)} = <strong>${fmtPHP(total)}</strong></div>
+                <div class="k">Security deposit</div><div class="v">${fmtPHP(deposit)} <span class="muted">(Refundable)</span></div>
+                <div class="k"><strong>Total to prepare</strong></div><div class="v"><strong>${fmtPHP(grand)}</strong></div>
+              </div>
+              <div class="small muted mt-2">Overtime, if any, is calculated at return. <button type="button" class="link-btn" onclick="App.openOvertimeRulesModal()">Overtime rules</button></div>`;
+        }
+        if (review) {
+            const dm = form.deliveryMethod?.value || 'Not selected';
+            review.className = 'callout small';
+            review.innerHTML = `<div class="kv"><div class="k">Vehicle</div><div class="v">${esc(getVehicle(vehicleId)?.name||'-')}</div><div class="k">Dates</div><div class="v">${fmtDateShort(start)} ${esc(form.pickupTime?.value||'')} – ${fmtDateShort(end)} ${esc(form.returnTime?.value||'')}</div><div class="k">Delivery</div><div class="v">${esc(dm)}</div><div class="k">Total to prepare</div><div class="v"><strong>${fmtPHP(grand)}</strong> (${fmtPHP(total)} rental + ${fmtPHP(deposit)} refundable deposit)</div></div>`;
+        }
+        const conflict = hasConflict(vehicleId, start, end);
         if (conflict.conflict && msg)
             msg.innerHTML = `<div class="callout danger small mt-2"><strong>Dates unavailable.</strong> ${esc(conflict.reason || 'This vehicle is already booked for the selected period.')}</div>`;
     }
@@ -2028,56 +2123,36 @@ function renderAdminVehicles() {
         if (state.reservations.some(r => ownsReservation(r) && r.status === 'completed' && ['unpaid','pending','rejected'].includes(overtimeStatus(r)))) return toast('Settle outstanding overtime before requesting another rental.', 'error');
         const form = e.target;
         const btn = form.querySelector('button[type="submit"]');
-        if (btn && btn.disabled)
-            return;
+        if (btn && btn.disabled) return;
+        const cust = currentCustomer();
+        if (!cust) { toast('No customer account selected.', 'error'); return; }
+        if (!bookingHasLicense(cust)) { toast('Upload your LTO license (Restriction Code A/A1) in Account before submitting.', 'error'); return; }
         const startVal = form.start.value, endVal = form.end.value;
         const deliveryMethod = form.deliveryMethod ? form.deliveryMethod.value : '';
         const trackingConsentAccepted = !!form.trackingConsent?.checked;
-        if (!startVal || !endVal) {
-            toast('Please select start and end dates.', 'error');
-            return;
-        }
-        if (!DELIVERY_METHODS.includes(deliveryMethod)) {
-            toast('Please select a delivery method.', 'error');
-            if (form.deliveryMethod)
-                form.deliveryMethod.focus();
-            return;
-        }
-        if (!trackingConsentAccepted) {
-            toast('Please agree to GPS tracking consent to continue.', 'error');
-            if (form.trackingConsent) form.trackingConsent.focus();
-            return;
-        }
-        const start = new Date(startVal + '+08:00').toISOString(), end = new Date(endVal + '+08:00').toISOString();
-        if (new Date(end) <= new Date(start)) {
-            toast('End date must be after start date.', 'error');
-            updateFeePreview(vehicleId);
-            return;
+        if (!startVal || !endVal) { toast('Please select start and end dates.', 'error'); return; }
+        if (!DELIVERY_METHODS.includes(deliveryMethod)) { toast('Please select a delivery method.', 'error'); form.deliveryMethod?.focus(); return; }
+        if (!trackingConsentAccepted) { toast('Please agree to GPS tracking consent to continue.', 'error'); form.trackingConsent?.focus(); return; }
+        const start = new Date(startVal).toISOString(), end = new Date(endVal).toISOString();
+        if (!Number.isFinite(new Date(start).getTime()) || !Number.isFinite(new Date(end).getTime()) || new Date(end) <= new Date(start)) {
+            const sameDay = (form.start.value||'').slice(0,10) === (form.end.value||'').slice(0,10);
+            toast(sameDay ? 'For a same-day rental, return time must be later than pickup time.' : 'End date must be after start date.', 'error');
+            updateFeePreview(vehicleId); return;
         }
         const conflict = hasConflict(vehicleId, start, end);
         if (conflict.conflict) {
             const msg = $('#conflictMsg');
-            if (msg)
-                msg.innerHTML = `<div class="callout danger small"><strong>Dates unavailable.</strong> ${esc(conflict.reason || '')}</div>`;
-            toast('Selected dates overlap an existing booking.', 'error');
-            return;
+            if (msg) msg.innerHTML = `<div class="callout danger small"><strong>Dates unavailable.</strong> ${esc(conflict.reason || '')}</div>`;
+            toast('Selected dates overlap an existing booking.', 'error'); return;
         }
-        if (btn)
-            btn.disabled = true;
-        const cust = currentCustomer();
-        if (!cust) {
-            if (btn)
-                btn.disabled = false;
-            toast('No customer account selected.', 'error');
-            return;
-        }
+        if (btn) btn.disabled = true;
         const { total } = computeFee(vehicleId, start, end);
         const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod, trackingConsent: { accepted: true, at: new Date().toISOString() } };
         setTimeout(() => {
             state.reservations.unshift(r);
-            notify('admin', 'New reservation request', `${cust.name} requested ${getVehicle(vehicleId)?.name || 'a vehicle'}.`, '#/admin/reservations');
-            toast('Reservation request submitted.', 'success');
-            navigate('#/customer/reservations');
+            notify('admin', 'New reservation request', `${cust.name} requested ${getVehicle(vehicleId)?.name || 'a vehicle'}.`, `#/admin/reservation/${r.id}`);
+            toast('Request submitted. Please wait for admin approval. You will be notified.', 'success');
+            navigate(`#/customer/reservation/${r.id}`);
         }, 300);
     }
     function confirmCancelReservation(id) {
@@ -2567,7 +2642,8 @@ function renderAdminVehicles() {
         // Exposed for automated tests and inspection (no UI behavior change)
         DELIVERY_METHODS, getDeliveryMethod, getOvertimeSettings, overlaps, computeFee, computeOvertime, computeEarlyRefund, hasConflict, openRefundSelection, openAssessRefund, assessRefund, openRefundModal, recordRefund, acknowledgeRefund,
         getVehicle, getReservation, getCustomer, currentCustomer, reservationsForVehicle, notify, logActivity, captureActivity, uid,
-        getTrackedVehicles: (...a)=>App.Tracking?.getTrackedVehicles?.(...a), isOverdue: (...a)=>App.Tracking?.isOverdue?.(...a), isNoSignal: (...a)=>App.Tracking?.isNoSignal?.(...a), addPing: (...a)=>App.Tracking?.addPing?.(...a)
+        getTrackedVehicles: (...a)=>App.Tracking?.getTrackedVehicles?.(...a), isOverdue: (...a)=>App.Tracking?.isOverdue?.(...a), isNoSignal: (...a)=>App.Tracking?.isNoSignal?.(...a), addPing: (...a)=>App.Tracking?.addPing?.(...a),
+        getDepositAmount, getNextStepBanner, nextStepBannerHTML, recommendByBudget, rangeCrossesBlocked, buildFlatpickrDisable, bookingHasLicense, getLicenseStatus, openOvertimeRulesModal
     };
     document.addEventListener('click', (e) => {
         const dd = $('#notifDropdown'), btn = $('#notifBtn');

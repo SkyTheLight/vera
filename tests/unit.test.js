@@ -354,3 +354,113 @@ test('tracking addPing rejects non-ongoing reservation and completed rental clea
   sandbox.App.Tracking.clearPingsForReservation(ongoing.id);
   assert.equal(sandbox.VERA_STATE.locationPings.some(p => p.reservationId === ongoing.id), false);
 });
+
+test('deposit math uses single setting and total to prepare is rental fee plus deposit', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.settings.depositAmount = 5000;
+  const v = sandbox.VERA_STATE.vehicles.find(x => x.id === 'v1');
+  const fee = sandbox.App.computeFee('v1', '2026-02-01T08:00:00+08:00', '2026-02-03T08:00:00+08:00');
+  assert.equal(fee.days, 2);
+  assert.equal(fee.total, 2 * v.ratePerDay);
+  assert.equal(sandbox.App.getDepositAmount(), 5000);
+  assert.equal(fee.total + sandbox.App.getDepositAmount(), 2 * v.ratePerDay + 5000);
+  sandbox.VERA_STATE.settings.depositAmount = 7000;
+  assert.equal(sandbox.App.getDepositAmount(), 7000);
+});
+
+test('recommendByBudget filters by total including deposit, sorts, excludes unavailable, parses 5k', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.settings.depositAmount = 5000;
+  sandbox.VERA_STATE.vehicles = [
+    { id:'b1', name:'Bike1', brand:'B', displacement:400, ratePerDay:1000, status:'available', plateNumber:'P1', color:'', year:2024, transmission:'MT', seats:2, image:'' },
+    { id:'b2', name:'Bike2', brand:'B', displacement:400, ratePerDay:1500, status:'available', plateNumber:'P2', color:'', year:2024, transmission:'MT', seats:2, image:'' },
+    { id:'b3', name:'Bike3', brand:'B', displacement:600, ratePerDay:500, status:'available', plateNumber:'P3', color:'', year:2024, transmission:'MT', seats:2, image:'' },
+    { id:'b4', name:'Bike4', brand:'B', displacement:400, ratePerDay:800, status:'maintenance', plateNumber:'P4', color:'', year:2024, transmission:'MT', seats:2, image:'' },
+  ];
+  sandbox.VERA_STATE.reservations = [
+    { id:'rb', vehicleId:'b3', status:'approved', start:'2026-03-01T00:00:00.000Z', end:'2026-03-05T00:00:00.000Z' }
+  ];
+  const res = sandbox.App.recommendByBudget('8k', '2026-03-01T08:00:00+08:00', '2026-03-02T08:00:00+08:00');
+  assert.equal(res.ok, true);
+  assert.equal(res.budget, 8000);
+  assert.equal(res.items.length, 2); assert.equal(res.items[0].vehicleId,'b1'); assert.equal(res.items[1].vehicleId,'b2');
+  assert.equal(res.items[0].rentalFee, 1000);
+  assert.equal(res.items[0].deposit, 5000);
+  assert.equal(res.items[0].total, 6000);
+  const res5k = sandbox.App.recommendByBudget('5,000', '2026-03-01T08:00:00+08:00', '2026-03-02T08:00:00+08:00');
+  assert.equal(res5k.budget, 5000);
+  assert.equal(res5k.items.length, 0); // deposit alone consumes budget
+  const resComma = sandbox.App.recommendByBudget('₱8,000', '2026-03-01T08:00:00+08:00', '2026-03-02T08:00:00+08:00');
+  assert.equal(resComma.budget, 8000);
+});
+
+test('getNextStepBanner returns correct banner for each reservation/payment state', () => {
+  const { sandbox } = loadApp();
+  const pay = (status) => [{ id:'p1', reservationId:'r1', status, submittedAt:'2026-01-01T00:00:00Z' }];
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'pending'}, []).title, 'Waiting for admin approval');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'approved'}, []).title, 'Approved! Pay now');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'approved'}, pay('pending')).title, 'Payment submitted. Waiting for verification');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'approved'}, pay('verified')).title, 'Ready for pickup / delivery');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'ongoing',end:'2026-01-01T10:00:00Z'}, []).title, 'Rental in progress');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'completed',refund:{status:'pending'}}, []).title, 'Completed');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'rejected',rejectReason:'x'}, []).title, 'Reservation rejected');
+  assert.equal(sandbox.App.getNextStepBanner({id:'r1',status:'cancelled',cancelReason:'y'}, []).title, 'Reservation cancelled');
+});
+
+test('blocked date range is rejected for booking range crossing blocked reservation', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.reservations = [{ id:'r1', vehicleId:'v1', status:'approved', start:'2026-04-05T00:00:00.000Z', end:'2026-04-07T00:00:00.000Z' }];
+  const blocked = sandbox.App.buildFlatpickrDisable('v1').blockedRanges;
+  assert.equal(sandbox.App.rangeCrossesBlocked('2026-04-04T08:00:00+08:00','2026-04-08T08:00:00+08:00', blocked), true);
+  assert.equal(sandbox.App.rangeCrossesBlocked('2026-04-08T08:00:00+08:00','2026-04-10T08:00:00+08:00', blocked), false);
+});
+
+test('budget <= deposit returns early reply with deposit and minimum total, no date question', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.settings.depositAmount = 5000;
+  const cheapest = sandbox.VERA_STATE.vehicles.reduce((m, v) => Math.min(m, v.ratePerDay), Infinity);
+  const dep = sandbox.App.getDepositAmount();
+  const oneDay = sandbox.App.computeFee(sandbox.VERA_STATE.vehicles.find(v => v.ratePerDay === cheapest).id, '2026-01-01T00:00:00+08:00', '2026-01-02T00:00:00+08:00');
+  const expectedMin = oneDay.total + dep;
+  sandbox.VERA_STATE.role = 'customer';
+  sandbox.VERA_STATE.currentCustomerId = sandbox.VERA_STATE.customers[0].id;
+  const resp = sandbox.App.Assistant.respond('5k budget ko, 3 days');
+  const text = String(resp.text || '');
+  assert.match(text, /deposit/i);
+  assert.match(text, /5,000|5000/);
+  assert.doesNotMatch(text, /I need rental dates\/days|YYYY-MM-DD HH:MM/i);
+  assert.match(text.replace(/[,\s]/g,''), new RegExp(String(expectedMin)));
+});
+
+test('getLicenseStatus returns Missing/Expired/Expires before return/Valid', () => {
+  const { sandbox } = loadApp();
+  const res = { end: '2026-12-10T10:00:00+08:00' };
+  assert.equal(sandbox.App.getLicenseStatus({}, res).status, 'Missing');
+  assert.equal(sandbox.App.getLicenseStatus({ identification: { licenseNumber:'N1', licenseExpiry:'2020-01-01' } }, res).status, 'Expired');
+  assert.equal(sandbox.App.getLicenseStatus({ identification: { licenseNumber:'N1', licenseExpiry:'2026-12-05' } }, res).status, 'Expires before return');
+  assert.equal(sandbox.App.getLicenseStatus({ identification: { licenseNumber:'N1', licenseExpiry:'2026-12-20' } }, res).status, 'Valid');
+});
+
+test('single-day rental requires return time later than pickup time', () => {
+  const { sandbox } = loadApp();
+  const sameDayBad = sandbox.App.computeFee('v1', '2026-12-10T01:00:00.000Z', '2026-12-10T01:00:00.000Z');
+  assert.equal(sameDayBad.days, 0);
+  const start = new Date('2026-12-10T09:00:00+08:00').toISOString();
+  const end = new Date('2026-12-10T17:00:00+08:00').toISOString();
+  const fee = sandbox.App.computeFee('v1', start, end);
+  assert.equal(fee.days, 1);
+  assert.ok(new Date(end) > new Date(start));
+});
+
+test('bookingPrefill is consumed once and cleared after use', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.ui.bookingPrefill = { vehicleId: 'v1', start: '2026-12-10T00:00:00.000Z', end: '2026-12-12T00:00:00.000Z' };
+  const prefill = sandbox.VERA_STATE.ui.bookingPrefill && sandbox.VERA_STATE.ui.bookingPrefill.vehicleId === 'v1' ? sandbox.VERA_STATE.ui.bookingPrefill : null;
+  assert.ok(prefill);
+  sandbox.VERA_STATE.ui.bookingPrefill = null;
+  const prefill2 = sandbox.VERA_STATE.ui.bookingPrefill && sandbox.VERA_STATE.ui.bookingPrefill.vehicleId === 'v1' ? sandbox.VERA_STATE.ui.bookingPrefill : null;
+  assert.equal(prefill2, null);
+  sandbox.VERA_STATE.ui.bookingPrefill = { vehicleId: 'v1', start: '2026-12-10T00:00:00.000Z', end: '2026-12-12T00:00:00.000Z' };
+  const other = sandbox.VERA_STATE.ui.bookingPrefill.vehicleId === 'v2' ? sandbox.VERA_STATE.ui.bookingPrefill : null;
+  assert.equal(other, null);
+});

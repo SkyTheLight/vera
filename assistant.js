@@ -83,6 +83,10 @@
     computeQuote({ vehicleId, startISO, endISO }) {
       return App.computeFee(vehicleId, startISO, endISO);
     },
+    recommendByBudget(budget, start, end) {
+      if (typeof App.recommendByBudget === 'function') return App.recommendByBudget(budget, start, end);
+      return { ok: false, reason: 'unavailable', items: [], deposit: 5000, budget: 0 };
+    },
     createReservation({ vehicleId, startISO, endISO, deliveryMethod }) {
       return createReservationThroughExistingFlow({ vehicleId, startISO, endISO, deliveryMethod });
     },
@@ -116,6 +120,26 @@
       if (inCat.length === 1) best = inCat[0];
     }
     return { vehicle: best, category: cat };
+  }
+  function parseBudgetAmount(input) {
+    if (input == null) return null;
+    let s = String(input).toLowerCase().replace(/[₱,\s]/g, '');
+    const k = s.match(/^(\d+(?:\.\d+)?)k$/); if (k) return Number(k[1]) * 1000;
+    const m = s.match(/(\d+(?:\.\d+)?)/); if (!m) return null;
+    const n = Number(m[1]); return Number.isFinite(n) ? n : null;
+  }
+  function detectBudgetIntent(text) {
+    const raw = String(text || '');
+    const n = norm(raw);
+    const hasBudgetWord = /(\bbudget\b|\bafford\b|\bmagkano\b|\bkaya\b(?:\s+ko)?\b|\bpasok\b|\bunder\b|\bbelow\b|\bwithin\b|\bhanggang\b|\bphp\b)/i.test(n);
+    const hasMoney = /(₱|php\s*\d|\b\d[\d,]*(?:\.\d+)?\s*k\b|\b\d[\d,]{2,}\b)/i.test(raw);
+    if (!hasBudgetWord && !hasMoney) return null;
+    const m2 = raw.match(/(₱\s*\d[\d,]*(?:\.\d+)?\s*k?|\b\d[\d,]*(?:\.\d+)?\s*k\b|\bphp\s*\d[\d,]*(?:\.\d+)?\b)/i)
+      || raw.match(/(?:budget|afford|under|below|within|kaya|pasok|hanggang|max|lang)\D{0,12}(\d[\d,]*(?:\.\d+)?)/i);
+    const amount = parseBudgetAmount(m2 ? (m2[1] || m2[0]) : null);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    if (!hasBudgetWord && !/(₱|php|\bk\b)/i.test(raw)) return null;
+    return { amount };
   }
   function parseDateInput(text) {
     const s = String(text || '').trim();
@@ -215,6 +239,8 @@
     if (/\b(hi|hello|hey|good\s*(morning|afternoon|evening)|help)\b/.test(n) && n.length < 40) {
       return { text: 'I can help with vehicle rates, requirements, availability, booking, and finding the right buttons in V.E.R.A.', chips: DEFAULT_CHIPS };
     }
+    const bIntent = detectBudgetIntent(text);
+    if (bIntent) return startBudgetFlow(text, bIntent.amount);
     if (/\b(require|need|required|license|licen[cs]e|id|deposit)\b/.test(n)) return answerRequirements();
     if (/\b(rate|price|cost|how much|per day)\b/.test(n)) return answerRates(text);
     if (/\b(overtime|late)\b/.test(n)) return answerOvertime();
@@ -297,6 +323,65 @@
     return { text: `Your recent reservations:\n${lines.join('\n')}`, chips: DEFAULT_CHIPS, actions:[{type:'navigate',route:'#/customer/reservations',label:'Open My Reservations'}] };
   }
 
+  function budgetTooLowResponse(amount) {
+    const dep = (App.getDepositAmount ? App.getDepositAmount() : 5000);
+    const vehicles = (state.vehicles || []).filter(v => v && typeof v.ratePerDay === 'number');
+    let min = null;
+    for (const v of vehicles) {
+      const s = '2026-01-01T00:00:00+08:00';
+      const e = '2026-01-02T00:00:00+08:00';
+      const fee = App.computeFee ? App.computeFee(v.id, s, e) : null;
+      if (!fee || !fee.total) continue;
+      const total = fee.total + dep;
+      if (!min || total < min.total) min = { total, rate: v.ratePerDay, days: fee.days || 1, name: `${v.brand} ${v.name}`.trim() };
+    }
+    const minText = min ? ` Minimum total for the cheapest bike for ${min.days} day is ${fmtPeso(min.total)} (${fmtPeso(min.rate)} rental + ${fmtPeso(dep)} refundable deposit).` : '';
+    return { text: `Ay, ${fmtPeso(amount)} budget is not enough pa. The refundable security deposit alone is ${fmtPeso(dep)}, and budget means total cash out including deposit.${minText} Please try a higher budget, tapos send mo ulit with your dates.`, chips: ['12k budget ko, 2 days', 'Check availability', 'What are the rates?'] };
+  }
+
+  function startBudgetFlow(text, amount) {
+    const dep = (App.getDepositAmount ? App.getDepositAmount() : 5000);
+    if (Number.isFinite(amount) && amount <= dep) {
+      chat.flow = null;
+      return budgetTooLowResponse(amount);
+    }
+    const dates = extractDates(text);
+    chat.flow = { name:'budget', step: dates.length < 2 ? 'dates' : 'ready', data:{ budget: amount, startISO: dates[0]?.iso || null, endISO: dates[1]?.iso || null } };
+    return handleFlow(text, norm(text), {});
+  }
+
+  function budgetFlow(text, n) {
+    const f = chat.flow;
+    const dep = (App.getDepositAmount ? App.getDepositAmount() : 5000);
+    if (Number.isFinite(f.data?.budget) && f.data.budget <= dep) { chat.flow = null; return budgetTooLowResponse(f.data.budget); }
+    if (f.step === 'dates') {
+      const dates = extractDates(text);
+      if (dates.length < 2) {
+        const dep = (App.getDepositAmount ? App.getDepositAmount() : 5000);
+        return { text: `Budget noted: ${fmtPeso(f.data.budget)} total cash out (includes refundable ${fmtPeso(dep)} deposit). I need rental dates/days to check availability and exact totals. Please enter start and end as \`YYYY-MM-DD HH:MM\` to \`YYYY-MM-DD HH:MM\`.`, chips: ['2026-12-01 08:00 to 2026-12-03 08:00'] };
+      }
+      const start = new Date(dates[0].iso), end = new Date(dates[1].iso);
+      if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) return { text: 'Invalid dates. Make sure end is after start.', chips: [] };
+      f.data.startISO = dates[0].iso; f.data.endISO = dates[1].iso; f.step = 'ready';
+    }
+    if (f.step === 'ready') {
+      const res = tools.recommendByBudget(f.data.budget, f.data.startISO, f.data.endISO);
+      chat.flow = null;
+      if (!res.ok) {
+        if (res.reason === 'missing_dates') return { text: 'I need rental dates/days to recommend bikes within your budget.', chips: DEFAULT_CHIPS };
+        return { text: 'I could not compute budget recommendations right now. Please try again with a budget and dates.', chips: DEFAULT_CHIPS };
+      }
+      if (!res.items.length) {
+        return { text: `No available bikes fit ${fmtPeso(res.budget)} total cash out for ${fmtDateShort(res.startISO)} to ${fmtDateShort(res.endISO)}. Budget includes the refundable ${fmtPeso(res.deposit)} deposit, so only rental fee + deposit within budget is shown. Try fewer days, a smaller cc class (400cc), or different dates.`, chips: ['400cc available?', 'Check availability', 'How do I book?'] };
+      }
+      const lines = res.items.map((it, i) => `${i+1}. ${it.brand} ${it.name} ${it.displacement}cc - Rental ${fmtPeso(it.rentalFee)} (${it.days} day/s x ${fmtPeso(it.ratePerDay)}) + Deposit ${fmtPeso(it.deposit)} refundable = Total ${fmtPeso(it.total)}`);
+      const actions = res.items.map(it => ({ type:'book-prefill', label:`Book ${it.name}`, vehicleId: it.vehicleId, startISO: it.startISO, endISO: it.endISO }));
+      return { text: `Budget: ${fmtPeso(res.budget)} total cash out (includes refundable ${fmtPeso(res.deposit)} deposit). Available options for ${fmtDateShort(res.startISO)} to ${fmtDateShort(res.endISO)}:\n${lines.join('\n')}\n\nTap "Book ..." to open the booking page with dates prefilled. You'll confirm and submit manually.`, chips: ['Check availability', 'What do I need to rent?'], actions };
+    }
+    chat.flow = null;
+    return { text: 'Budget flow reset. How can I help?', chips: DEFAULT_CHIPS };
+  }
+
   function startAvailabilityFlow(text) {
     const { vehicle, category } = findVehicle(text);
     const dates = extractDates(text);
@@ -315,6 +400,7 @@
     if (!f) return AssistantRespond(text, context);
     if (/\b(cancel|stop|never mind|nevermind)\b/.test(n)) { chat.flow = null; return { text: 'Okay, I cancelled that flow.', chips: DEFAULT_CHIPS }; }
 
+    if (f.name === 'budget') return budgetFlow(text, n);
     if (f.name === 'availability') return availabilityFlow(text, n);
     if (f.name === 'booking') return bookingFlow(text, n);
     chat.flow = null;
@@ -504,6 +590,10 @@
     safe(() => {
       if (action.type === 'navigate') tools.navigateTo(action.route);
       if (action.type === 'highlight') tools.highlight(action.target);
+      if (action.type === 'book-prefill') {
+        if (state.ui) state.ui.bookingPrefill = { vehicleId: action.vehicleId, start: action.startISO, end: action.endISO };
+        tools.navigateTo(`#/customer/vehicle/${action.vehicleId}`);
+      }
     });
   }
 
