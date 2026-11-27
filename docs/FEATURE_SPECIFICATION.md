@@ -44,7 +44,9 @@ Allows a customer to select how the vehicle will be handed over at pickup and re
 | RES-FR-02 | Block submission when dates conflict with `approved`/`ongoing` reservations or vehicle is `maintenance`/`malfunction`. | Implemented |
 | RES-FR-03 | Calculate estimated rental fee from duration and vehicle daily rate (`days = ceil`, minimum 1). | Implemented |
 | RES-FR-04 | Support status transitions: `pending → approved|rejected|cancelled`, `approved → ongoing|cancelled`, `ongoing → completed`. | Implemented |
-| RES-FR-05 | Compute overtime on completion when actual return is after scheduled end. | Implemented |
+| RES-FR-05 | Compute overtime on completion when actual return is after scheduled end using contract tiers: 1h=P500, 2h=P800, 3h=P1,000, 4h+=P1,000+P500/hour after 3rd; >6h late charges one full-day rate (vehicle ratePerDay). Hours are rounded up. | Implemented |
+| RES-FR-05A | Apply optional overtime add-ons: cleaning fee P200 and admin-entered refueling fee. Show breakdown lines (hours late, tier/base, cleaning, refueling, total/final charge). | Implemented |
+| RES-FR-05B | Store overtime settings in `VERA_STATE.settings.overtime` (tiers, perHourAfterThird, fullDayAfterHours, cleaningFee) and show read-only admin "Rental Rules" panel. | Implemented |
 
 ## 4. Non-functional requirements
 | ID | Requirement | Notes |
@@ -90,9 +92,50 @@ Allows a customer to select how the vehicle will be handed over at pickup and re
 - Existing seed and legacy-like records without `deliveryMethod` remain viewable and stable.
 - Delivery method functionality does not break overlap checks, fee/overtime calculation, or status transitions.
 
-## 8. Future considerations (not implemented)
+## 8. Overtime contract rules (implemented)
+
+- **Late definition:** actual return is after scheduled reservation end.
+- **Hour rounding:** billable hours = `ceil((actualReturn-end)/1 hour)`; minimum billable late unit is 1 hour once late. **ASSUMPTION:** owner should confirm whether any grace period applies.
+- **Tiers:**
+  - 1 hour late: P500
+  - 2 hours late: P800
+  - 3 hours late: P1,000
+  - 4 hours or more: P1,000 + P500 for each hour after the 3rd (4h=1,500, 5h=2,000, 6h=2,500)
+  - More than 6 hours late: charge one full-day rate (vehicle `ratePerDay`) instead of hourly tier.
+- **Optional add-ons (assessment):** cleaning fee P200, refueling fee (admin-entered amount). Add-ons are separate line items and included in final overtime charge.
+- **Config:** `VERA_STATE.settings.overtime = { tiers:{1:500,2:800,3:1000}, perHourAfterThird:500, fullDayAfterHours:6, cleaningFee:200 }`.
+- **UI:** admin completion modal shows breakdown preview; admin/customer reservation detail overtime panel shows hours late, tier applied, base, cleaning, refueling, final/outstanding. Admin dashboard shows read-only Rental Rules panel.
+
+## 9. Future considerations (not implemented)
 - Capture delivery/collection addresses and contact instructions per method.
 - Define conditional required fields (e.g. address required for host delivery/collection).
 - Configure and apply delivery/collection fees if business rules are approved.
 - Add admin workflow prompts/checklists based on handoff method.
 - Persist data and files via backend services in a production version.
+
+
+
+## 11. Admin Live Map / Vehicle Tracking (simulated v1)
+
+- **Scope:** Admin-only `#/admin/map` with sidebar/mobile nav entry "Live Map". Customers cannot open it.
+- **Data:** `vehicle.tracker` `{ deviceId, enabled, lastSeenAt }` (legacy-safe default), `VERA_STATE.locationPings` `[{ vehicleId, reservationId, lat, lng, speedKph, recordedAt, source: 'simulator'|'tracker' }]`, `reservation.trackingConsent` `{ accepted:true, at }`.
+- **Consent:** Booking form requires GPS tracking consent checkbox; submission blocked without it; consent stored on reservation and shown in reservation detail.
+- **Map/list:** Leaflet + OpenStreetMap tiles (CDN, no API keys). One pin per vehicle with **ongoing** reservation. Click pin/row shows vehicle name/model/plate, renter, reservation ID, start, expected return, OVERDUE badge if `now > end`, last update, link to `#/admin/reservation/:id`. List panel beside map (stacks on mobile) with filters: All rented, Overdue.
+- **No signal:** If no ping in last 15 minutes, vehicle shown greyed as "No signal".
+- **Visibility/retention:** Locations shown only for ongoing reservations. Pings cleared when reservation completes; addPing rejects non-ongoing/out-of-period pings.
+- **Simulator:** Admin "Demo simulator" toggle on map page. While on, every 5s adds a ping per ongoing enabled-tracker vehicle moving along Santo Domingo, Cainta, Rizal waypoints with interpolation/randomness. Page/pins labeled "Demo data (simulated)".
+- **Integration point:** `addPing(ping)` validates lat/lng, vehicle/reservation match, ongoing status, rental period. Simulator calls it; future real tracker integration should call same function. No network code added.
+- **Admin vehicle tracker field:** Vehicle modal/card includes device ID + enabled toggle + last seen.
+- **Logging:** Map access and tracker/simulator enable-disable logged via `logActivity`.
+- **Tests:** Pure helpers `getTrackedVehicles`, `isOverdue`, `isNoSignal`, `addPing` exposed on `window.App` for unit tests.
+
+## 10. V.E.R.A. Assistant (customer chat, rule-based v1)
+
+- **Scope:** Customer-only floating chat assistant for FAQs, availability checks, booking guidance, and navigation to key actions. Hidden for admin and landing/unauthenticated role.
+- **Architecture:** Isolated `Assistant.respond(userText, context)` returns `{ text, chips?, actions? }`. v1 uses rule-based intent matching and small in-memory flow state; designed so an LLM can replace `respond()` later without touching UI.
+- **Tools (allow-list):** `getRates`, `getRequirements`, `checkAvailability`, `computeQuote`, `createReservation`, `navigateTo`, `highlight`. Actions are executed only through these tools.
+- **Data sources:** Rates/vehicles/status from `VERA_STATE.vehicles`; requirements static prototype policy text; delivery options from `App.DELIVERY_METHODS`; overtime from `App.getOvertimeSettings()/VERA_STATE.settings.overtime`; availability/conflict from existing `hasConflict/overlaps`; fees from existing `computeFee/computeOvertime`.
+- **Booking:** Collects vehicle, start/end, delivery method; shows summary with `computeFee` estimate; requires explicit "Confirm booking" tap; creates reservation through existing validation/creation path as **pending**; notifies admin; logs activity as `AI Assistant (for <customer name>)`. Assistant never approves, verifies payment, or releases vehicles.
+- **Navigation:** `data-ai-target` attributes on key UI elements; `navigateTo` uses hash routing; `highlight` scrolls and applies temporary pulsing outline, retries briefly if element not rendered.
+- **Safety/validation:** customer role only; uses current customer data only; validates dates, past start, vehicle existence/status, conflicts, delivery method; unknown questions get capability response + chips; no invented policies; assistant errors are caught so normal UI keeps working.
+- **UI:** floating button bottom-right (above mobile bottom nav), chat panel, message bubbles, typing indicator, quick chips, keyboard accessible (Esc closes, Enter sends). History in memory only.

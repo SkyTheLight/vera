@@ -28,7 +28,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/zx4rr-2026-side.jpg',
         imageUrlAlt: 'images/vehicles/zx4rr-2026-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V1-001', enabled: true, lastSeenAt: null }
     },
     {
         id: 'v2',
@@ -45,7 +46,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/zx4rr-2027-side.jpg',
         imageUrlAlt: 'images/vehicles/zx4rr-2027-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V2-002', enabled: true, lastSeenAt: null }
     },
     {
         id: 'v3',
@@ -62,7 +64,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/cb650r-side.jpg',
         imageUrlAlt: 'images/vehicles/cb650r-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V3-003', enabled: true, lastSeenAt: null }
     },
     {
         id: 'v4',
@@ -79,7 +82,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/zx6r-2025-side.jpg',
         imageUrlAlt: 'images/vehicles/zx6r-2025-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V4-004', enabled: true, lastSeenAt: null }
     },
     {
         id: 'v5',
@@ -96,7 +100,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/cbr650r-side.jpg',
         imageUrlAlt: 'images/vehicles/cbr650r-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V5-005', enabled: true, lastSeenAt: null }
     },
     {
         id: 'v6',
@@ -113,7 +118,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/z1100-se-side.jpg',
         imageUrlAlt: 'images/vehicles/z1100-se-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V6-006', enabled: true, lastSeenAt: null }
     },
     {
         id: 'v7',
@@ -130,7 +136,8 @@ const vehicles = [
         imageUrl: 'images/vehicles/zx10r-2025-side.jpg',
         imageUrlAlt: 'images/vehicles/zx10r-2025-front-angle.jpg',
         seats: 2,
-        transmission: 'Manual'
+        transmission: 'Manual',
+        tracker: { deviceId: 'TRK-V7-007', enabled: true, lastSeenAt: null }
     }
 ];
 
@@ -145,16 +152,38 @@ const vehicles = [
 
   // Demo-focused reservations: include pending for admin review, approved without payment for customer upload, ongoing for start/complete flow context, etc.
   const reservations = [
-    { id: 'r1', vehicleId: 'v1', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(1, 8), end: day(3, 18), actualReturn: null, status: 'pending', totalFee: 5400, overtimeFee: 0, createdAt: day(-1, 10), approvedBy: null, rejectReason: '', deliveryMethod: 'Guest Pickup & Guest Return' },
-    { id: 'r2', vehicleId: 'v4', customerId: 'c2', customerName: 'Maria Santos', customerEmail: 'maria.santos@email.com', start: day(2, 9), end: day(4, 17), actualReturn: null, status: 'pending', totalFee: 4800, overtimeFee: 0, createdAt: day(0, 14), approvedBy: null, rejectReason: '', deliveryMethod: 'Guest Pickup & Host Collection' },
-    { id: 'r3', vehicleId: 'v2', customerId: 'c3', customerName: 'Carlo Reyes', customerEmail: 'carlo.reyes@email.com', start: day(3, 8), end: day(4, 18), actualReturn: null, status: 'approved', totalFee: 1000, overtimeFee: 0, createdAt: day(-2, 9), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return' },
-    { id: 'r4', vehicleId: 'v6', customerId: 'c4', customerName: 'Ana Villanueva', customerEmail: 'ana.v@email.com', start: day(5, 8), end: day(7, 18), actualReturn: null, status: 'approved', totalFee: 6600, overtimeFee: 0, createdAt: day(-3, 11), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Host Collection' },
-    { id: 'r5', vehicleId: 'v3', customerId: 'c5', customerName: 'Mark Bautista', customerEmail: 'mark.b@email.com', start: day(-1, 8), end: day(1, 18), actualReturn: null, status: 'ongoing', totalFee: 1350, overtimeFee: 0, createdAt: day(-4, 15), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Guest Return' },
-    { id: 'r6', vehicleId: 'v1', customerId: 'c4', customerName: 'Ana Villanueva', customerEmail: 'ana.v@email.com', start: day(-10, 8), end: day(-8, 18), actualReturn: day(-8, 20), status: 'completed', totalFee: 5400, overtimeFee: 300, createdAt: day(-12, 9), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Host Collection' },
-    { id: 'r7', vehicleId: 'v7', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(-15, 8), end: day(-13, 18), actualReturn: day(-13, 18), status: 'completed', totalFee: 5100, overtimeFee: 0, createdAt: day(-17, 10), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return' },
-    { id: 'r8', vehicleId: 'v2', customerId: 'c2', customerName: 'Maria Santos', customerEmail: 'maria.santos@email.com', start: day(-6, 8), end: day(-5, 18), actualReturn: null, status: 'cancelled', totalFee: 1000, overtimeFee: 0, createdAt: day(-8, 13), approvedBy: null, rejectReason: '', cancelReason: 'Change of plans', deliveryMethod: 'Host Delivery & Host Collection' },
-    { id: 'r9', vehicleId: 'v4', customerId: 'c3', customerName: 'Carlo Reyes', customerEmail: 'carlo.reyes@email.com', start: day(-4, 8), end: day(-3, 18), actualReturn: null, status: 'rejected', totalFee: 3200, overtimeFee: 0, createdAt: day(-5, 16), approvedBy: 'Admin', rejectReason: 'Incomplete requirements submitted.', deliveryMethod: 'Guest Pickup & Guest Return' },
-    { id: 'r10', vehicleId: 'v6', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(10, 8), end: day(12, 18), actualReturn: null, status: 'approved', totalFee: 6600, overtimeFee: 0, createdAt: day(-1, 8), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return' }
+    { id: 'r1', vehicleId: 'v1', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(1, 8), end: day(3, 18), actualReturn: null, status: 'pending', totalFee: 5400, overtimeFee: 0, createdAt: day(-1, 10), approvedBy: null, rejectReason: '', deliveryMethod: 'Guest Pickup & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r2', vehicleId: 'v4', customerId: 'c2', customerName: 'Maria Santos', customerEmail: 'maria.santos@email.com', start: day(2, 9), end: day(4, 17), actualReturn: null, status: 'pending', totalFee: 4800, overtimeFee: 0, createdAt: day(0, 14), approvedBy: null, rejectReason: '', deliveryMethod: 'Guest Pickup & Host Collection',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r3', vehicleId: 'v2', customerId: 'c3', customerName: 'Carlo Reyes', customerEmail: 'carlo.reyes@email.com', start: day(3, 8), end: day(4, 18), actualReturn: null, status: 'approved', totalFee: 1000, overtimeFee: 0, createdAt: day(-2, 9), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r4', vehicleId: 'v6', customerId: 'c4', customerName: 'Ana Villanueva', customerEmail: 'ana.v@email.com', start: day(5, 8), end: day(7, 18), actualReturn: null, status: 'approved', totalFee: 6600, overtimeFee: 0, createdAt: day(-3, 11), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Host Collection',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r5', vehicleId: 'v3', customerId: 'c5', customerName: 'Mark Bautista', customerEmail: 'mark.b@email.com', start: day(-1, 8), end: day(1, 18), actualReturn: null, status: 'ongoing', totalFee: 1350, overtimeFee: 0, createdAt: day(-4, 15), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r15', vehicleId: 'v1', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(-1, 7), end: day(2, 18), actualReturn: null, status: 'ongoing', totalFee: 10500, overtimeFee: 0, createdAt: day(-3, 9), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Guest Return',
+      trackingConsent: { accepted: true, at: day(-3, 9) } },
+    { id: 'r16', vehicleId: 'v2', customerId: 'c2', customerName: 'Maria Santos', customerEmail: 'maria.santos@email.com', start: day(-2, 8), end: day(1, 18), actualReturn: null, status: 'ongoing', totalFee: 10500, overtimeFee: 0, createdAt: day(-4, 10), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return',
+      trackingConsent: { accepted: true, at: day(-4, 10) } },
+    { id: 'r17', vehicleId: 'v4', customerId: 'c3', customerName: 'Carlo Reyes', customerEmail: 'carlo.reyes@email.com', start: day(0, 8), end: day(3, 18), actualReturn: null, status: 'ongoing', totalFee: 12900, overtimeFee: 0, createdAt: day(-1, 11), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Host Collection',
+      trackingConsent: { accepted: true, at: day(-1, 11) } },
+    { id: 'r18', vehicleId: 'v6', customerId: 'c4', customerName: 'Ana Villanueva', customerEmail: 'ana.v@email.com', start: day(-1, 9), end: day(2, 18), actualReturn: null, status: 'ongoing', totalFee: 13500, overtimeFee: 0, createdAt: day(-2, 8), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Host Collection',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r19', vehicleId: 'v5', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(-1, 8), end: day(1, 18), actualReturn: null, status: 'ongoing', totalFee: 12000, overtimeFee: 0, createdAt: day(-3, 14), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Guest Return',
+      trackingConsent: { accepted: true, at: day(-3, 14) } },
+    { id: 'r20', vehicleId: 'v7', customerId: 'c2', customerName: 'Maria Santos', customerEmail: 'maria.santos@email.com', start: day(0, 7), end: day(2, 18), actualReturn: null, status: 'ongoing', totalFee: 19500, overtimeFee: 0, createdAt: day(-2, 12), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 12) } },
+    { id: 'r6', vehicleId: 'v1', customerId: 'c4', customerName: 'Ana Villanueva', customerEmail: 'ana.v@email.com', start: day(-10, 8), end: day(-8, 18), actualReturn: day(-8, 20), status: 'completed', totalFee: 5400, overtimeFee: 300, createdAt: day(-12, 9), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Guest Pickup & Host Collection',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r7', vehicleId: 'v7', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(-15, 8), end: day(-13, 18), actualReturn: day(-13, 18), status: 'completed', totalFee: 5100, overtimeFee: 0, createdAt: day(-17, 10), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r8', vehicleId: 'v2', customerId: 'c2', customerName: 'Maria Santos', customerEmail: 'maria.santos@email.com', start: day(-6, 8), end: day(-5, 18), actualReturn: null, status: 'cancelled', totalFee: 1000, overtimeFee: 0, createdAt: day(-8, 13), approvedBy: null, rejectReason: '', cancelReason: 'Change of plans', deliveryMethod: 'Host Delivery & Host Collection',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r9', vehicleId: 'v4', customerId: 'c3', customerName: 'Carlo Reyes', customerEmail: 'carlo.reyes@email.com', start: day(-4, 8), end: day(-3, 18), actualReturn: null, status: 'rejected', totalFee: 3200, overtimeFee: 0, createdAt: day(-5, 16), approvedBy: 'Admin', rejectReason: 'Incomplete requirements submitted.', deliveryMethod: 'Guest Pickup & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 8) } },
+    { id: 'r10', vehicleId: 'v6', customerId: 'c1', customerName: 'Juan Dela Cruz', customerEmail: 'juan.delacruz@email.com', start: day(10, 8), end: day(12, 18), actualReturn: null, status: 'approved', totalFee: 6600, overtimeFee: 0, createdAt: day(-1, 8), approvedBy: 'Admin', rejectReason: '', deliveryMethod: 'Host Delivery & Guest Return',
+      trackingConsent: { accepted: true, at: day(-2, 8) } }
   ];
 
   const payments = [
@@ -186,36 +215,73 @@ const vehicles = [
     { id: 'n8', role: 'customer', title: 'Reservation rejected', body: 'Your ZX-6R request was rejected. Check details for reason.', isRead: true, createdAt: day(-4, 8), link: '#/customer/reservations' }
   ];
 
-  // Recalculate synthetic demo records using the current daily and overtime rates.
+  const DEFAULT_OVERTIME_SETTINGS = {
+    tiers: { 1: 500, 2: 800, 3: 1000 },
+    perHourAfterThird: 500,
+    fullDayAfterHours: 6,
+    cleaningFee: 200
+  };
+
+  function demoOvertimeCalc(vehicle, scheduledEnd, actualReturn, settings) {
+    const ms = new Date(actualReturn) - new Date(scheduledEnd);
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return { hours: 0, baseFee: 0, tierLabel: 'On time', cleaningFee: 0, refuelingFee: 0, finalFee: 0, fullDayApplied: false };
+    }
+    const hours = Math.ceil(ms / 3600000);
+    let baseFee = 0;
+    let tierLabel = '';
+    let fullDayApplied = false;
+    if (hours > settings.fullDayAfterHours) {
+      baseFee = vehicle.ratePerDay;
+      tierLabel = `More than ${settings.fullDayAfterHours} hours (full-day rate)`;
+      fullDayApplied = true;
+    } else if (hours <= 3) {
+      baseFee = settings.tiers[String(hours)] || 0;
+      tierLabel = `${hours} hour${hours === 1 ? '' : 's'} late (contract tier)`;
+    } else {
+      baseFee = settings.tiers['3'] + ((hours - 3) * settings.perHourAfterThird);
+      tierLabel = `${hours} hours late (P1,000 + P${settings.perHourAfterThird}/hour after 3rd)`;
+    }
+    return { hours, baseFee, tierLabel, cleaningFee: 0, refuelingFee: 0, finalFee: baseFee, fullDayApplied };
+  }
+
+  // Recalculate synthetic demo records using current daily rates and contract overtime settings.
   // Do not use this routine to reprice real historical transactions.
   for (const reservation of reservations) {
     const vehicle = vehicles.find(item => item.id === reservation.vehicleId);
     const duration = new Date(reservation.end) - new Date(reservation.start);
     reservation.refund = null;
     reservation.totalFee = Math.ceil(duration / 86400000) * vehicle.ratePerDay;
-    const overtime = reservation.actualReturn
-      ? Math.max(0, new Date(reservation.actualReturn) - new Date(reservation.end))
-      : 0;
-    reservation.overtimeFee = Math.ceil(overtime / 3600000) * vehicle.ratePerHour;
+    const ot = reservation.actualReturn ? demoOvertimeCalc(vehicle, reservation.end, reservation.actualReturn, DEFAULT_OVERTIME_SETTINGS) : null;
+    reservation.overtimeFee = ot ? ot.finalFee : 0;
+    reservation.overtime = ot && ot.hours > 0 ? {
+      hours: ot.hours,
+      ratePerHour: vehicle.ratePerHour, // legacy field preserved for compatibility
+      baseFee: ot.baseFee,
+      cleaningFee: 0,
+      refuelingFee: 0,
+      calculatedFee: ot.baseFee,
+      finalFee: ot.finalFee,
+      tierLabel: ot.tierLabel,
+      fullDayApplied: ot.fullDayApplied,
+      adjustmentReason: '',
+      assessedBy: 'Admin',
+      assessedAt: reservation.actualReturn,
+      paymentStatus: 'unpaid'
+    } : null;
   }
 
   for (const payment of payments) {
     const reservation = reservations.find(item => item.id === payment.reservationId);
     payment.paymentType = 'rental';
-    payment.amount = reservation.totalFee;
+    payment.amount = reservation ? reservation.totalFee : payment.amount;
   }
 
   // Split historically settled demo overtime from the original rental payment.
   for (const reservation of reservations) {
     if (!reservation.overtimeFee) continue;
-    const vehicle = vehicles.find(v => v.id === reservation.vehicleId);
     const original = payments.find(p => p.reservationId === reservation.id && p.status === 'verified');
-    reservation.overtime = {
-      hours: Math.ceil((new Date(reservation.actualReturn) - new Date(reservation.end)) / 3600000),
-      ratePerHour: vehicle.ratePerHour, calculatedFee: reservation.overtimeFee,
-      finalFee: reservation.overtimeFee, adjustmentReason: '', assessedBy: 'Admin',
-      assessedAt: reservation.actualReturn, paymentStatus: original ? 'paid' : 'unpaid'
-    };
+    if (reservation.overtime) reservation.overtime.paymentStatus = original ? 'paid' : 'unpaid';
     if (original) payments.push({ ...original, id: original.id + '-ot', paymentType: 'overtime', amount: reservation.overtimeFee, submittedAt: reservation.actualReturn });
   }
 
@@ -248,11 +314,26 @@ const vehicles = [
     };
   }
 
-  window.VERA_SEED = { vehicles, customers, reservations, payments, maintenanceLogs, notifications };
+  // moved below after DEFAULT_OVERTIME_SETTINGS is defined
+
+
+  const locationPings = [
+    { id: 'ping-demo-1', vehicleId: 'v3', reservationId: 'r5', lat: 14.5889, lng: 121.0970, speedKph: 24, recordedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(), source: 'simulator' },
+    { id: 'ping-demo-2', vehicleId: 'v1', reservationId: 'r15', lat: 14.5925, lng: 121.1035, speedKph: 31, recordedAt: new Date(Date.now() - 4 * 60 * 1000).toISOString(), source: 'simulator' },
+    { id: 'ping-demo-3', vehicleId: 'v2', reservationId: 'r16', lat: 14.5960, lng: 121.1100, speedKph: 18, recordedAt: new Date(Date.now() - 6 * 60 * 1000).toISOString(), source: 'simulator' },
+    { id: 'ping-demo-4', vehicleId: 'v4', reservationId: 'r17', lat: 14.5840, lng: 121.1120, speedKph: 27, recordedAt: new Date(Date.now() - 1 * 60 * 1000).toISOString(), source: 'simulator' },
+    { id: 'ping-demo-5', vehicleId: 'v6', reservationId: 'r18', lat: 14.5800, lng: 121.1050, speedKph: 22, recordedAt: new Date(Date.now() - 8 * 60 * 1000).toISOString(), source: 'simulator' },
+    { id: 'ping-demo-6', vehicleId: 'v5', reservationId: 'r19', lat: 14.5835, lng: 121.0990, speedKph: 0, recordedAt: new Date(Date.now() - 35 * 60 * 1000).toISOString(), source: 'simulator' },
+    { id: 'ping-demo-7', vehicleId: 'v7', reservationId: 'r20', lat: 14.5905, lng: 121.1165, speedKph: 0, recordedAt: new Date(Date.now() - 42 * 60 * 1000).toISOString(), source: 'simulator' }
+  ];
+  window.VERA_SEED = { vehicles, customers, reservations, payments, maintenanceLogs, notifications, overtimeSettings: JSON.parse(JSON.stringify(DEFAULT_OVERTIME_SETTINGS)), locationPings: JSON.parse(JSON.stringify(locationPings)) };
 
   window.VERA_STATE = {
     role: localStorage.getItem('vera_role') || null,
     currentCustomerId: 'c1', // demo customer
+    settings: {
+      overtime: JSON.parse(JSON.stringify(DEFAULT_OVERTIME_SETTINGS))
+    },
     vehicles: JSON.parse(JSON.stringify(vehicles)),
     customers: JSON.parse(JSON.stringify(customers)),
     reservations: JSON.parse(JSON.stringify(reservations)),
@@ -260,6 +341,7 @@ const vehicles = [
     maintenanceLogs: JSON.parse(JSON.stringify(maintenanceLogs)),
     notifications: JSON.parse(JSON.stringify(notifications)),
     activityLogs: [],
+    locationPings: JSON.parse(JSON.stringify(locationPings)),
     ui: { notifOpen: false, modal: null }
   };
 })();

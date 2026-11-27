@@ -71,3 +71,49 @@
 - **Executed & passed:** Delivery Method core behavior for all 4 combinations (create, store, display, admin/customer visibility, lifecycle preservation), validation (missing/invalid), legacy “Not specified” handling, repeated-submit guard, key customer/admin regression smokes and critical actions, syntax/unit checks.
 - **Blocked/limited:** Native file-picker upload E2E, comprehensive screenshot evidence capture/naming for every state, viewport-resize/mobile device lab, external HTML/CSS validator/CI.
 - **Not re-tested in final pass (but previously verified/unchanged):** some modal-driven admin/customer actions (e.g. reject-with-reason, cancel-pending UI click path) beyond smoke; payment native upload. These are marked accordingly above.
+
+
+
+
+
+## 9. Live Map / Vehicle Tracking (simulated v1)
+
+| Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
+|---|---|---|---|---|---|---|---|
+| TRK-01 | addPing validation | Ongoing reservation exists | Call addPing with invalid lat, mismatched vehicle/reservation, valid ping | Invalid rejected; valid accepted with source | addPing returns ok false/true accordingly | PASS | Unit test. |
+| TRK-02 | Tracked vehicles scope | Mix of statuses | Call getTrackedVehicles | Only ongoing reservations returned | Rows all ongoing | PASS | Unit test. |
+| TRK-03 | Overdue detection | Ongoing reservation end in past | Call isOverdue/getTrackedVehicles overdue | Overdue true; overdue filter includes it | Detected | PASS | Unit test. |
+| TRK-04 | No signal | No ping / stale ping >15m | Call isNoSignal | True when missing or stale; false when recent | Detected | PASS | Unit test. |
+| TRK-05 | Ping retention/completion | Ongoing reservation with pings | Complete rental/clearPings | Pings removed; non-ongoing addPing rejected | Cleared/rejected | PASS | Unit test + code path. |
+| TRK-06 | Consent required | Customer booking form | Submit without consent checkbox | Submission blocked with error | Required checkbox + JS validation | PASS | Code-reviewed; manual UI recommended. |
+| TRK-07 | Role guard map | Customer role | Navigate to #/admin/map | Redirected/blocked from admin map | route guard + render guard | PASS | Code-reviewed. |
+| TRK-08 | Simulator label | Admin map, simulator on | Toggle simulator | "Demo data (simulated)" visible; pings added every ~5s | Implemented | PASS | Manual UI recommended. |
+
+## 8. V.E.R.A. Assistant (rule-based v1)
+
+| Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
+|---|---|---|---|---|---|---|---|
+| AST-01 | Assistant visibility | Landing/admin/customer roles | Check FAB visibility | Visible only for customer role; hidden on admin/landing | Implemented by role sync in assistant.js | PASS | Code/unit context verified; manual UI pass recommended. |
+| AST-02 | FAQ rates/requirements | Customer role | Ask "What do I need to rent?" / rates | Answers use real data/settings/policy text; no invented values | Requirements response includes LTO A/A1, ID, P5000 deposit | PASS | Unit test. |
+| AST-03 | Availability tool | Customer role | Check availability for maintenance vehicle/date range | Uses hasConflict/status logic; unavailable reason returned | Maintenance vehicle returned unavailable | PASS | Unit test. |
+| AST-04 | Quote tool | Customer role | Request quote | Uses computeFee result | Quote deep-equals computeFee | PASS | Unit test. |
+| AST-05 | Booking validation | Customer role | Try invalid dates then valid confirm flow | Invalid rejected; valid creates pending reservation only | Invalid rejected, valid pending reservation created | PASS | Unit test for tool; UI flow code-reviewed. |
+| AST-06 | AI activity log | Customer creates AI booking | Create booking via assistant tool | Activity log contains AI Assistant actor | Log entry found with AI Assistant actor | PASS | Unit test. |
+| AST-07 | Non-customer refusal | Admin role | Ask assistant to check availability | Refusal: customer accounts only | Refusal message returned | PASS | Unit test. |
+| AST-08 | Unknown question | Customer role | Ask unsupported question | States capabilities + chips; no invented policy | Implemented in respond() fallback | PASS | Code-reviewed. |
+
+## 7. Overtime contract rules
+
+| Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
+|---|---|---|---|---|---|---|---|
+| OT-01 | Overtime settings | App loaded | Inspect `VERA_STATE.settings.overtime` / Rental Rules panel | Settings contain tiers 500/800/1000, perHourAfterThird 500, fullDayAfterHours 6, cleaningFee 200 | Settings present in state and exposed by `getOvertimeSettings()` | PASS | Verified by unit tests and code inspection. |
+| OT-02 | Overtime on time | Known reservation/vehicle | Compute overtime with actualReturn == end | 0 hours, P0 | Returned 0/P0 | PASS | Unit test. |
+| OT-03 | Overtime 1 hour | 30 min late | Compute overtime | Rounded up to 1h, P500 | P500 | PASS | Unit test (ceil). |
+| OT-04 | Overtime 2 hours | Exactly 2h late | Compute overtime | P800 | P800 | PASS | Unit test. |
+| OT-05 | Overtime 3 hours | Exactly 3h late | Compute overtime | P1,000 | P1,000 | PASS | Unit test. |
+| OT-06 | Overtime 4 hours | Exactly 4h late | Compute overtime | P1,500 (1000 + 500) | P1,500 | PASS | Unit test. |
+| OT-07 | Overtime 6 hours | Exactly 6h late | Compute overtime | P2,500 (1000 + 3*500) | P2,500 | PASS | Unit test. |
+| OT-08 | Overtime >6 hours | 6h01m late | Compute overtime | Full-day rate of vehicle (v1 P3,500), fullDayApplied true | P3,500, fullDayApplied true | PASS | Unit test. |
+| OT-09 | Cleaning/refueling add-ons | 1h late + cleaning + refueling 350 | Compute overtime with options | Base 500 + cleaning 200 + refueling 350 = P1,050; breakdown fields present | P1,050 with breakdown | PASS | Unit test. |
+| OT-10 | Legacy settings safety | State missing settings.overtime | Compute overtime | Defaults applied; no crash | Defaults used, result correct | PASS | Unit test. |
+| OT-11 | UI breakdown | Admin completes late rental | Open complete modal, enter late actual return, toggle cleaning, enter refueling | Preview shows hours late, tier, base, cleaning, refueling, calculated/final total | Implemented in code; manual browser screenshot evidence not captured in this run | NOT TESTED | Code path present in `updateOvertimePreview`/`openCompleteModal`; requires manual UI confirmation. |

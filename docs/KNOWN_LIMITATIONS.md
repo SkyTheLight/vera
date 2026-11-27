@@ -49,3 +49,29 @@ This document distinguishes **implemented**, **simulated**, **missing**, and **f
 
 ## 6. Important disclaimer
 V.E.R.A. is an **interactive prototype for demonstration and academic purposes**. Test results and implemented behaviors described in accompanying documentation reflect the current client-side prototype and its constraints; they must not be interpreted as evidence of production readiness, security hardening, or real-world transactional correctness.
+
+
+## 8. Overtime contract assumptions (owner confirmation required)
+- **Hour rounding (ASSUMPTION):** Late hours are rounded **up** to the next whole hour using `ceil`. Example: 1 minute late is billed as 1 hour. Owner should confirm.
+- **Grace period (ASSUMPTION):** No grace period is applied; any return after scheduled end is treated as late. Owner should confirm whether a grace period (e.g., 10/15 minutes) is desired.
+- **>6 hours rule (ASSUMPTION):** "More than 6 hours late" is implemented as billable hours > 6 (i.e., 6h01m and above) charging one full-day `ratePerDay`. Exactly 6h uses the 6h tier (P2,500). Owner should confirm boundary.
+- **Add-on applicability (ASSUMPTION):** Cleaning/refueling add-ons are admin-selected/entered during overtime assessment and apply when late; they are not auto-inferred. Owner should confirm when they apply.
+- **Legacy records:** Existing/legacy reservation records without new overtime fields remain readable; missing settings fall back to defaults and missing overtime breakdown fields display safely.
+
+
+## 10. Live Map / Tracking v1 limitations
+
+- **Simulated data:** Map locations are demo/simulated when simulator is on. No real GPS hardware, no real tracker provider integration, no background network location service.
+- **OSM tiles need internet:** Leaflet/OpenStreetMap tiles load from CDN/internet; offline or blocked CDN prevents map tiles from rendering (list still works if data exists).
+- **No persistent pings:** Pings are in-memory and reset on reload. Completed reservations clear pings.
+- **Privacy/consent:** Prototype stores consent flag on reservation record only; no legal/compliance workflow, no audit-grade consent management, no real identity verification.
+- **Simple simulator path:** Waypoints/interpolation around Santo Domingo, Cainta, Rizal are illustrative, not real road routing.
+- **Future real-tracker path:** Physical device -> tracker/provider webhook -> backend API/auth/validation/storage -> `addPing()`/state update -> admin map UI. This prototype intentionally stops at `addPing()` and simulator.
+
+## 9. Assistant v1 limitations
+- **Rule-based, not an LLM:** v1 uses keyword/regex intent matching and simple flow state. It can misunderstand phrasing and supports only implemented intents.
+- **No external AI/API:** No API keys, no network calls, no server-side model. All answers come from in-app data/rules.
+- **In-memory chat:** Chat history resets on reload; no persistence/audit transcript beyond normal reservation/activity records.
+- **Booking scope:** Assistant can create only pending reservation requests for the current customer; it cannot approve, reject, start, complete, verify payments, or change vehicle/admin records.
+- **Navigation depends on rendered targets:** Highlighting retries briefly; if a target is unavailable in current state/role, it may not highlight.
+- **Date parsing is simple:** Best with `YYYY-MM-DD HH:MM` formats; natural language dates are limited.

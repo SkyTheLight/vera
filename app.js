@@ -96,15 +96,61 @@
         const days = Math.max(1, Math.ceil(ms / 86400000));
         return { days, total: days * v.ratePerDay };
     }
-    function computeOvertime(vehicleId, scheduledEnd, actualReturn) {
+    const DEFAULT_OVERTIME_SETTINGS = {
+        tiers: { 1: 500, 2: 800, 3: 1000 },
+        perHourAfterThird: 500,
+        fullDayAfterHours: 6,
+        cleaningFee: 200
+    };
+
+    function getOvertimeSettings() {
+        const s = state && state.settings && state.settings.overtime ? state.settings.overtime : {};
+        const tiers = Object.assign({}, DEFAULT_OVERTIME_SETTINGS.tiers, s.tiers || {});
+        return {
+            tiers: {
+                1: Number(tiers[1]) || DEFAULT_OVERTIME_SETTINGS.tiers[1],
+                2: Number(tiers[2]) || DEFAULT_OVERTIME_SETTINGS.tiers[2],
+                3: Number(tiers[3]) || DEFAULT_OVERTIME_SETTINGS.tiers[3]
+            },
+            perHourAfterThird: Number(s.perHourAfterThird) || DEFAULT_OVERTIME_SETTINGS.perHourAfterThird,
+            fullDayAfterHours: Number(s.fullDayAfterHours) || DEFAULT_OVERTIME_SETTINGS.fullDayAfterHours,
+            cleaningFee: Number(s.cleaningFee) || DEFAULT_OVERTIME_SETTINGS.cleaningFee
+        };
+    }
+
+    function computeOvertime(vehicleId, scheduledEnd, actualReturn, options = {}) {
         const v = getVehicle(vehicleId);
+        const settings = getOvertimeSettings();
+        const cleaningFee = options.cleaning ? settings.cleaningFee : 0;
+        const refuelingFee = Math.max(0, Number(options.refuelingFee) || 0);
         if (!v || !actualReturn)
-            return { hours: 0, fee: 0 };
+            return { hours: 0, fee: 0, baseFee: 0, tierLabel: 'On time', cleaningFee, refuelingFee, total: 0, fullDayApplied: false, settings };
         const ms = new Date(actualReturn) - new Date(scheduledEnd);
         if (!Number.isFinite(ms) || ms <= 0)
-            return { hours: 0, fee: 0 };
+            return { hours: 0, fee: 0, baseFee: 0, tierLabel: 'On time', cleaningFee, refuelingFee, total: cleaningFee + refuelingFee, fullDayApplied: false, settings };
         const hours = Math.ceil(ms / 3600000);
-        return { hours, fee: hours * v.ratePerHour };
+        let baseFee = 0;
+        let tierLabel = '';
+        let fullDayApplied = false;
+        if (hours > settings.fullDayAfterHours) {
+            baseFee = Number(v.ratePerDay) || 0;
+            tierLabel = `More than ${settings.fullDayAfterHours} hours late (full-day rate)`;
+            fullDayApplied = true;
+        } else if (hours === 1) {
+            baseFee = settings.tiers[1];
+            tierLabel = '1 hour late (contract tier)';
+        } else if (hours === 2) {
+            baseFee = settings.tiers[2];
+            tierLabel = '2 hours late (contract tier)';
+        } else if (hours === 3) {
+            baseFee = settings.tiers[3];
+            tierLabel = '3 hours late (contract tier)';
+        } else {
+            baseFee = settings.tiers[3] + ((hours - 3) * settings.perHourAfterThird);
+            tierLabel = `${hours} hours late (P1,000 + P${settings.perHourAfterThird}/hr after 3rd hour)`;
+        }
+        const fee = baseFee + cleaningFee + refuelingFee;
+        return { hours, fee, baseFee, tierLabel, cleaningFee, refuelingFee, total: fee, fullDayApplied, settings };
     }
     function notify(role, title, body, link, customerId = null) {
         state.notifications.unshift({ id: uid('n'), role, customerId, title, body, isRead: false, createdAt: new Date().toISOString(), link: link || (role === 'admin' ? '#/admin/dashboard' : '#/customer/notifications') });
@@ -214,9 +260,14 @@
         }
     }
     function routeAdmin(page, param, sub) {
+        if (state.role !== 'admin') { navigate('#/'); return; }
         switch (page) {
             case 'dashboard':
                 renderAdminDashboard();
+                break;
+            case 'map':
+                if (state.role === 'admin') logActivity({module:'Tracking',action:'Viewed',entityId:'map',description:'Admin opened Live Map',link:'#/admin/map',changes:[]});
+                if (App.Tracking?.renderMapPage) App.Tracking.renderMapPage(false); else mount('<div class="empty"><div class="empty-title">Map module unavailable</div></div>');
                 break;
             case 'vehicles':
                 renderAdminVehicles();
@@ -250,6 +301,7 @@
       if (state.role === 'admin') {
           return [
               { href: '#/admin/dashboard', label: 'Dashboard' },
+              { href: '#/admin/map', label: 'Live Map' },
               { href: '#/admin/vehicles', label: 'Vehicles' },
               { href: '#/admin/reservations', label: 'Reservations' },
               { href: '#/admin/payments', label: 'Payments & Refunds' },
@@ -291,6 +343,7 @@
                 location.hash === '#/customer/history'
             );
         }
+        if (state.role === 'admin' && App.Tracking?.preloadLeaflet) { try { App.Tracking.preloadLeaflet(); } catch (_) {} }
         const items = navItems();
         const hash = location.hash || '#/';
         $('#sidebarNav').innerHTML = items.map(it => `<a href="${it.href}" class="nav-link ${hash.startsWith(it.href) ? 'active' : ''}"><span class="nav-dot"></span><span>${esc(it.label)}</span></a>`).join('');
@@ -674,7 +727,7 @@ function renderCustomerVehicles() {
         const blocked = v.status === 'maintenance' || v.status === 'malfunction';
         const bookedRanges = reservationsForVehicle(id).filter(r => r.status === 'approved' || r.status === 'ongoing').sort((a, b) => new Date(a.start) - new Date(b.start));
         mount(`
-      <div style="margin-bottom:12px;"><a href="#/customer/vehicles" class="btn btn-ghost btn-sm">&larr; Back to vehicles</a></div>
+      <div style="margin-bottom:12px;"><a href="#/customer/vehicles" class="btn btn-ghost btn-sm" data-ai-target="browse-vehicles-link">&larr; Back to vehicles</a></div>
       <div class="page-header">
         <div><h1 class="page-title">${esc(v.name)}</h1><p class="page-desc">${esc(v.brand)} ${esc(v.model)} · ${v.year} · ${esc(v.color)}</p></div>
         <div>${statusBadge(v.status)}</div>
@@ -707,7 +760,7 @@ function renderCustomerVehicles() {
         <div>
           <div class="panel"><div class="panel-header"><div class="panel-title">Request reservation</div></div><div class="panel-body">
             ${blocked ? `<div class="callout danger">This vehicle is currently <strong>${esc(v.status)}</strong> and cannot accept reservation requests.</div>` : `
-            <form id="reqForm" onsubmit="App.submitReservation(event,'${v.id}')" class="stack">
+            <form id="reqForm" data-ai-target="booking-form" onsubmit="App.submitReservation(event,'${v.id}')" class="stack">
               <div class="field"><label class="field-label" for="start">Start date and time</label><input id="start" class="input" required type="datetime-local" name="start" onchange="App.updateFeePreview('${v.id}')"></div>
               <div class="field"><label class="field-label" for="end">End date and time</label><input id="end" class="input" required type="datetime-local" name="end" onchange="App.updateFeePreview('${v.id}')"></div>
               <div class="field"><label class="field-label" for="deliveryMethod">Delivery method</label>
@@ -717,9 +770,10 @@ function renderCustomerVehicles() {
                 </select>
                 <div class="field-hint">Choose how the vehicle will be picked up and returned for this reservation.</div>
               </div>
+              <label class="field" style="display:flex;gap:10px;align-items:flex-start"><input id="trackingConsent" name="trackingConsent" type="checkbox" required style="margin-top:3px"><span class="small muted">I agree the vehicle may be tracked by GPS during my rental period.</span></label>
               <div id="feePreview" class="callout info small">Select start and end dates to calculate the estimated fee.</div>
               <div id="conflictMsg"></div>
-              <button class="btn btn-primary btn-block" type="submit">Submit reservation request</button>
+              <button class="btn btn-primary btn-block" type="submit" data-ai-target="booking-submit">Submit reservation request</button>
               <p class="small muted">Requests are submitted as <strong>Pending</strong> until reviewed by the administrator.</p>
             </form>`}
           </div></div>
@@ -847,12 +901,12 @@ function renderCustomerVehicles() {
                         <button class="btn btn-primary" onclick="App.verifyPayment('${p.id}')">Verify</button>
                         <button class="btn btn-danger" onclick="App.openRejectPaymentModal('${p.id}')">Reject</button>
                     </div>` : ''}
-                ${!admin && r.status === 'approved' && p.status === 'rejected' ? `<a class="btn btn-primary btn-block mt-3" href="${payLink}">Resubmit payment proof</a>` : ''}`;
+                ${!admin && r.status === 'approved' && p.status === 'rejected' ? `<a class="btn btn-primary btn-block mt-3" href="${payLink}" data-ai-target="upload-payment-proof">Resubmit payment proof</a>` : ''}`;
         } else if (!admin && r.status === 'approved') {
             body = `
                 <p class="callout info small mb-3">No payment proof has been submitted.</p>
                 <div class="reservation-price-row"><span>Amount due</span><strong>${fmtPHP(r.totalFee)}</strong></div>
-                <a class="btn btn-primary btn-block mt-3" href="${payLink}">Upload payment proof</a>`;
+                <a class="btn btn-primary btn-block mt-3" href="${payLink}" data-ai-target="upload-payment-proof">Upload payment proof</a>`;
         } else {
             body = `<p class="small muted">${!admin && r.status === 'pending' ? 'Payment proof can be uploaded once the reservation is approved.' : 'No payment proof submitted.'}</p>`;
         }
@@ -903,7 +957,7 @@ function renderCustomerVehicles() {
                 <div class="form-actions"><button type="submit" class="btn btn-danger btn-block">Cancel reservation</button></div>
             </form>`) : '';
         mount(`
-            <div class="mb-3"><a href="${back}" class="btn btn-ghost btn-sm">&larr; Back to reservations</a></div>
+            <div class="mb-3"><a href="${back}" class="btn btn-ghost btn-sm" data-ai-target="my-reservations-link">&larr; Back to reservations</a></div>
             <div class="page-header">
                 <div><h1 class="page-title">Reservation ${esc(r.id.toUpperCase())}</h1><p class="page-desc">${esc(admin ? r.customerName + ' · ' + (v?.name || 'Vehicle') : v?.name || 'Vehicle')}</p></div>
                 ${statusBadge(r.status)}
@@ -973,7 +1027,7 @@ function renderCustomerVehicles() {
       <div class="page-header"><div><h1 class="page-title">Account</h1><p class="page-desc">Your profile information and rental history.</p></div></div>
       <div class="grid-3">
         <div class="stack">
-          <div class="panel"><div class="panel-header"><div class="panel-title">Profile</div><button class="btn btn-sm" onclick="App.editCustomerIdentity('${cust.id}')">Edit profile</button></div><div class="panel-body"><div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">${customerAvatar(cust)}${identityBadge(cust)}</div>
+          <div class="panel"><div class="panel-header"><div class="panel-title">Profile</div><button class="btn btn-sm" data-ai-target="edit-profile" onclick="App.editCustomerIdentity('${cust.id}')">Edit profile</button></div><div class="panel-body"><div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">${customerAvatar(cust)}${identityBadge(cust)}</div>
             <div class="kv"><div class="k">Name</div><div class="v">${esc(cust.name)}</div><div class="k">Email</div><div class="v">${esc(cust.email)}</div><div class="k">Phone</div><div class="v">${esc(cust.phone)}</div><div class="k">Joined</div><div class="v">${fmtDateShort(cust.joinedAt)}</div></div>
           </div></div>
           <div class="panel"><div class="panel-header"><div class="panel-title">Identification documents</div></div><div class="panel-body">${customerDocuments(cust)}${cust.identification?.rejectionReason ? `<div class="callout danger mt-2">${esc(cust.identification.rejectionReason)}</div>` : ''}</div></div><div class="metrics" style="grid-template-columns:1fr 1fr;">
@@ -992,6 +1046,19 @@ function renderCustomerVehicles() {
       </div>
     `);
     }
+    function renderOvertimeRulesPanel() {
+        const s = getOvertimeSettings();
+        return `<div class="panel"><div class="panel-header"><div class="panel-title">Rental rules (overtime)</div><span class="small muted">Read-only contract settings</span></div><div class="panel-body"><div class="kv">
+            <div class="k">1 hour late</div><div class="v">${fmtPHP(s.tiers[1])}</div>
+            <div class="k">2 hours late</div><div class="v">${fmtPHP(s.tiers[2])}</div>
+            <div class="k">3 hours late</div><div class="v">${fmtPHP(s.tiers[3])}</div>
+            <div class="k">4+ hours late</div><div class="v">${fmtPHP(s.tiers[3])} + ${fmtPHP(s.perHourAfterThird)}/hour after 3rd</div>
+            <div class="k">More than ${s.fullDayAfterHours} hours</div><div class="v">1 full-day rate (vehicle rate/day)</div>
+            <div class="k">Cleaning fee (add-on)</div><div class="v">${fmtPHP(s.cleaningFee)}</div>
+            <div class="k">Refueling fee (add-on)</div><div class="v">Admin-entered amount</div>
+        </div><p class="small muted mt-2">Hours are rounded up to the next whole hour. Assumptions are documented in docs/KNOWN_LIMITATIONS.md.</p></div></div>`;
+    }
+
     // ---------- Admin: Dashboard ----------
     function renderAdminDashboard() {
         const pending = state.reservations.filter(r => r.status === 'pending').length;
@@ -1016,6 +1083,7 @@ function renderCustomerVehicles() {
       </div>
       <div class="grid-3">
         <div style="grid-column: span 2;" class="stack">
+          ${renderOvertimeRulesPanel()}
           <div class="panel"><div class="panel-header"><div class="panel-title">Today's schedule</div><a href="#/admin/reservations" class="btn btn-sm btn-ghost">View reservations</a></div>
             <div class="panel-body flush">${todays.length ? `<table class="table"><thead><tr><th>Customer</th><th>Vehicle</th><th>Period</th><th>Status</th></tr></thead><tbody>${todays.map(r => {
             const v = getVehicle(r.vehicleId);
@@ -1137,6 +1205,7 @@ function renderAdminVehicles() {
                         <p class="muted small">
                             ${fmtPHP(vehicle.ratePerHour)} / hour
                         </p>
+                        <p class="muted small" style="margin-top:6px">Tracker: ${esc(vehicle.tracker?.deviceId || 'Not set')} • ${vehicle.tracker?.enabled === false ? 'Disabled' : 'Enabled'}${vehicle.tracker?.lastSeenAt ? ` • Last seen ${fmtDateShort(vehicle.tracker.lastSeenAt)}` : ''}</p>
 
                         <div class="fleet-card-actions">
 
@@ -1355,6 +1424,8 @@ function renderAdminVehicles() {
         <div class="field"><label class="field-label">Seats</label><input name="seats" type="number" min="1" max="20" class="input" required value="${v ? v.seats : 2}"></div>
         <div class="field"><label class="field-label">Transmission</label><select name="transmission" class="select"><option ${v && v.transmission === 'Automatic' ? 'selected' : ''}>Automatic</option><option ${v && v.transmission === 'Manual' ? 'selected' : ''}>Manual</option></select></div>
         <div class="field"><label class="field-label">Color</label><input name="color" class="input" value="${esc(v ? v.color : '')}"></div>
+        <div class="field"><label class="field-label">Tracker device ID</label><input name="trackerDeviceId" class="input" value="${esc(v?.tracker?.deviceId || '')}" placeholder="e.g. TRK-V1-001"></div>
+        <div class="field"><label class="field-label">Tracker enabled</label><select name="trackerEnabled" class="select"><option value="true" ${v?.tracker?.enabled !== false ? 'selected' : ''}>Enabled</option><option value="false" ${v?.tracker?.enabled === false ? 'selected' : ''}>Disabled</option></select></div>
       </div></div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary">Save vehicle</button></div></form></div>`);
     }
     const DAMAGE_LOCATIONS = {
@@ -1474,32 +1545,38 @@ function renderAdminVehicles() {
         const p = getPaymentByReservation(r.id, 'overtime');
         const status = overtimeStatus(r);
         const labels = { unpaid: 'Unpaid', pending: 'Pending', rejected: 'Rejected', paid: 'Paid', not_applicable: 'No balance' };
+        const cleaning = Number(o.cleaningFee) || 0;
+        const refueling = Number(o.refuelingFee) || 0;
+        const baseFee = Number(o.baseFee ?? o.calculatedFee ?? r.overtimeFee) || 0;
+        const tier = o.tierLabel || (o.hours ? `${o.hours} hour(s) late` : 'Not applicable');
         const body = `
             <div class="kv">
                 <div class="k">Status</div><div class="v">${statusBadge(status === 'paid' ? 'verified' : status === 'not_applicable' ? 'neutral' : status === 'unpaid' ? 'pending' : status)} ${labels[status]}</div>
-                <div class="k">Billable hours</div><div class="v">${esc(o.hours ?? '—')}</div>
-                <div class="k">Hourly rate</div><div class="v">${fmtPHP(o.ratePerHour || 0)}</div>
-                <div class="k">Calculated fee</div><div class="v">${fmtPHP(o.calculatedFee ?? r.overtimeFee)}</div>
+                <div class="k">Billable hours</div><div class="v">${esc(o.hours ?? '-')}</div>
+                <div class="k">Tier applied</div><div class="v">${esc(tier)}</div>
+                <div class="k">Overtime base fee</div><div class="v">${fmtPHP(baseFee)}</div>
+                <div class="k">Cleaning fee</div><div class="v">${fmtPHP(cleaning)}</div>
+                <div class="k">Refueling fee</div><div class="v">${fmtPHP(refueling)}</div>
                 <div class="k">Final charge</div><div class="v">${fmtPHP(r.overtimeFee)}</div>
                 <div class="k">Outstanding</div><div class="v">${fmtPHP(status === 'paid' ? 0 : r.overtimeFee)}</div>
             </div>
             ${o.adjustmentReason ? `<p class="small muted mt-2">Adjustment: ${esc(o.adjustmentReason)}</p>` : ''}
-            ${o.assessedAt ? `<p class="small muted mt-2">Assessed by ${esc(o.assessedBy)} · ${fmtDate(o.assessedAt, {time:true})}</p>` : ''}
+            ${o.assessedAt ? `<p class="small muted mt-2">Assessed by ${esc(o.assessedBy)} � ${fmtDate(o.assessedAt, {time:true})}</p>` : ''}
             ${p ? `<div class="proof-preview">${p.proofDataUrl ? `<img src="${esc(p.proofDataUrl)}" alt="Overtime payment proof">` : 'Demo proof on file'}</div>` : ''}
             ${p?.rejectReason ? `<div class="callout danger mt-2">${esc(p.rejectReason)}</div>` : ''}
             ${admin && status === 'pending' ? `<div class="btn-group mt-3"><button class="btn btn-primary" onclick="App.verifyPayment('${p.id}')">Verify</button><button class="btn btn-danger" onclick="App.openRejectPaymentModal('${p.id}')">Reject</button></div>` : ''}
-            ${!admin && ['unpaid','rejected'].includes(status) ? `<button class="btn btn-primary btn-block mt-3" onclick="App.openOvertimePayment('${r.id}')">${status === 'rejected' ? 'Resubmit' : 'Upload'} overtime proof</button>` : ''}`;
+            ${!admin && ['unpaid','rejected'].includes(status) ? `<button class="btn btn-primary btn-block mt-3" data-ai-target="upload-overtime-proof" onclick="App.openOvertimePayment('${r.id}')">${status === 'rejected' ? 'Resubmit' : 'Upload'} overtime proof</button>` : ''}`;
         return reservationPanel('Overtime payment', body);
     }
 
-    function openOvertimePayment(id) {
+        function openOvertimePayment(id) {
         const r = getReservation(id);
         if (state.role !== 'customer' || !r || !ownsReservation(r) || r.status !== 'completed' || !['unpaid','rejected'].includes(overtimeStatus(r))) return;
         openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Settle overtime</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div>
             <form onsubmit="App.submitOvertimePayment(event,'${r.id}')"><div class="modal-body stack">
                 <div class="callout info">Amount due: <strong>${fmtPHP(r.overtimeFee)}</strong></div>
                 <label class="field">Payment method<select name="method" class="select"><option>GCash</option><option>Other</option></select></label>
-                <label class="field">Payment proof<input name="proof" type="file" class="input" accept="image/jpeg,image/png,image/webp" required></label>
+                <label class="field">Payment proof<input name="proof" type="file" class="input" accept="image/jpeg,image/png,image/webp" required data-ai-target="payment-proof-input"></label>
             </div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button type="submit" class="btn btn-primary">Submit proof</button></div></form></div>`);
     }
 
@@ -1654,6 +1731,8 @@ function renderAdminVehicles() {
         const early = actual < new Date(r.end);
         form.elements.finalFee.disabled = !late;
         form.elements.adjustmentReason.disabled = !late;
+        if (form.elements.cleaningFee) form.elements.cleaningFee.disabled = !late;
+        if (form.elements.refuelingFee) form.elements.refuelingFee.disabled = !late;
         form.querySelector('#overtimeFields').hidden = !late;
         form.querySelector('#earlyRefundFields').hidden = !early;
         form.elements.refundReason.disabled = !early;
@@ -1665,17 +1744,22 @@ function renderAdminVehicles() {
         }
         if (early) {
             const f = computeEarlyRefund(r, actual, form.elements.refundReason.value);
-            preview.innerHTML = `<strong>Early return refund</strong><br>Full unused days: ${f.unusedDays}<br>Unused rental value: ${fmtPHP(f.gross)}<br>Early return fee: −${fmtPHP(f.deduction)}<br>Refund due: <strong>${fmtPHP(f.amount)}</strong>${!f.paid && f.unusedDays ? '<br>No verified rental payment available to refund.' : ''}`;
+            preview.innerHTML = `<strong>Early return refund</strong><br>Full unused days: ${f.unusedDays}<br>Unused rental value: ${fmtPHP(f.gross)}<br>Early return fee: -${fmtPHP(f.deduction)}<br>Refund due: <strong>${fmtPHP(f.amount)}</strong>${!f.paid && f.unusedDays ? '<br>No verified rental payment available to refund.' : ''}`;
             return;
         }
-        const ot = computeOvertime(r.vehicleId, r.end, actual);
+        const settings = getOvertimeSettings();
+        const cleaning = !!form.elements.cleaningFee?.checked;
+        const refuelingFee = Math.max(0, Number(form.elements.refuelingFee?.value) || 0);
+        const ot = computeOvertime(r.vehicleId, r.end, actual, { cleaning, refuelingFee });
         const override = form.elements.finalFee.value;
         const final = late && override !== '' ? Number(override) : ot.fee;
-        preview.innerHTML = late ? `Billable overtime: <strong>${ot.hours} hour(s)</strong><br>Calculated: ${fmtPHP(ot.fee)}<br>Final charge: <strong>${fmtPHP(final)}</strong>` : 'Returned on time. No adjustment.';
+        preview.innerHTML = late
+            ? `Hours late: <strong>${ot.hours} hour(s)</strong><br>Tier: ${esc(ot.tierLabel)}<br>Overtime base: ${fmtPHP(ot.baseFee)}<br>Cleaning fee: ${fmtPHP(ot.cleaningFee)}${cleaning ? ' (applied)' : ''}<br>Refueling fee: ${fmtPHP(ot.refuelingFee)}<br>Calculated total: ${fmtPHP(ot.fee)}<br>Final charge: <strong>${fmtPHP(final)}</strong>${ot.fullDayApplied ? '<br><span class="small muted">Full-day rate applied because return is more than ' + settings.fullDayAfterHours + ' hours late.</span>' : ''}`
+            : 'Returned on time. No overtime charge.';
         form.elements.adjustmentReason.required = late && final !== ot.fee;
     }
 
-    function openCompleteModal(id) {
+        function openCompleteModal(id) {
         const r = getReservation(id);
         if (state.role !== 'admin' || !r || r.status !== 'ongoing') return;
         const val = fmtDateTimeInput(new Date());
@@ -1686,8 +1770,10 @@ function renderAdminVehicles() {
                 <div id="earlyRefundFields" class="stack"><label class="field">Reason for early return<select class="select" name="refundReason">${['early_return','vehicle_defect','customer_damage','service_issue'].map(k=>`<option value="${k}">${REFUND_REASONS[k][0]} — ${REFUND_REASONS[k][1]}</option>`).join('')}</select></label><label class="field">Assessment notes<textarea class="textarea" name="refundNotes" rows="2" placeholder="Required for non-voluntary returns"></textarea></label></div>
                 <div id="overtimePreview" class="callout"></div>
                 <div id="overtimeFields" class="stack">
-                    <label class="field">Override fee (optional; 0 to waive)<input name="finalFee" type="number" min="0" step="0.01" class="input" placeholder="Use calculated fee"></label>
-                    <label class="field">Adjustment reason<textarea name="adjustmentReason" class="textarea" rows="2" placeholder="Required if fee changes"></textarea></label>
+                    <label class="field checkline"><input type="checkbox" name="cleaningFee" value="1" onchange="App.updateOvertimePreview(this.form,'${id}')"> <span>Add cleaning fee (${fmtPHP(getOvertimeSettings().cleaningFee)})</span></label>
+                    <label class="field">Refueling fee (PHP)<input name="refuelingFee" type="number" min="0" step="0.01" class="input" value="0" oninput="App.updateOvertimePreview(this.form,'${id}')" placeholder="0.00"></label>
+                    <label class="field">Override total overtime charge (optional; 0 to waive)<input name="finalFee" type="number" min="0" step="0.01" class="input" placeholder="Use calculated total"></label>
+                    <label class="field">Adjustment reason<textarea name="adjustmentReason" class="textarea" rows="2" placeholder="Required if final charge differs from calculated total"></textarea></label>
                 </div>
             </div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button type="submit" class="btn btn-primary">Complete & record adjustment</button></div></form></div>`);
         const form = $('#modalRoot form'), input = $('#actualReturn');
@@ -1946,6 +2032,7 @@ function renderAdminVehicles() {
             return;
         const startVal = form.start.value, endVal = form.end.value;
         const deliveryMethod = form.deliveryMethod ? form.deliveryMethod.value : '';
+        const trackingConsentAccepted = !!form.trackingConsent?.checked;
         if (!startVal || !endVal) {
             toast('Please select start and end dates.', 'error');
             return;
@@ -1954,6 +2041,11 @@ function renderAdminVehicles() {
             toast('Please select a delivery method.', 'error');
             if (form.deliveryMethod)
                 form.deliveryMethod.focus();
+            return;
+        }
+        if (!trackingConsentAccepted) {
+            toast('Please agree to GPS tracking consent to continue.', 'error');
+            if (form.trackingConsent) form.trackingConsent.focus();
             return;
         }
         const start = new Date(startVal + '+08:00').toISOString(), end = new Date(endVal + '+08:00').toISOString();
@@ -1980,7 +2072,7 @@ function renderAdminVehicles() {
             return;
         }
         const { total } = computeFee(vehicleId, start, end);
-        const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod };
+        const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod, trackingConsent: { accepted: true, at: new Date().toISOString() } };
         setTimeout(() => {
             state.reservations.unshift(r);
             notify('admin', 'New reservation request', `${cust.name} requested ${getVehicle(vehicleId)?.name || 'a vehicle'}.`, '#/admin/reservations');
@@ -2152,22 +2244,24 @@ function renderAdminVehicles() {
             toast('Return time must be between the rental start and now.', 'error');
             return;
         }
-        const ot = computeOvertime(r.vehicleId, r.end, actual);
+        const cleaning = !!e.target.elements.cleaningFee?.checked;
+        const refuelingFee = Math.max(0, Number(e.target.elements.refuelingFee?.value) || 0);
+        const ot = computeOvertime(r.vehicleId, r.end, actual, { cleaning, refuelingFee });
         const override = e.target.elements.finalFee.value;
         const late = parsed > new Date(r.end);
         const finalFee = !late || override === '' ? ot.fee : Number(override);
         const reason = late ? e.target.elements.adjustmentReason.value.trim() : '';
-        const reasonType = e.target.elements.refundReason.value;
-        const reasonNotes = e.target.elements.refundNotes.value.trim();
+        const reasonType = e.target.elements.refundReason?.value;
+        const reasonNotes = e.target.elements.refundNotes?.value.trim() || '';
         if (parsed < new Date(r.end) && (!['early_return','vehicle_defect','customer_damage','service_issue'].includes(reasonType) || (reasonType !== 'early_return' && !reasonNotes))) return toast('Select a refund reason and provide assessment notes.', 'error');
         const refund = {...computeEarlyRefund(r, actual, reasonType), reasonNotes};
         if (refund.unusedDays && !refund.paid) return toast('Verify the original rental payment before assessing a refund.', 'error');
-        if (!Number.isFinite(finalFee) || finalFee < 0 || (finalFee !== ot.fee && !reason)) return toast('Enter a valid fee and a reason for any adjustment.', 'error');
+        if (!Number.isFinite(finalFee) || finalFee < 0 || !Number.isFinite(refuelingFee) || refuelingFee < 0 || (finalFee !== ot.fee && !reason)) return toast('Enter a valid fee and a reason for any adjustment.', 'error');
         r.status = 'completed';
         r.actualReturn = actual;
         r.refund = parsed < new Date(r.end) ? {...refund, status:refund.amount > 0 ? 'pending' : 'not_applicable', assessedBy:'Admin', assessedAt:new Date().toISOString()} : null;
         r.overtimeFee = finalFee;
-        r.overtime = { hours:ot.hours, ratePerHour:getVehicle(r.vehicleId)?.ratePerHour || 0, calculatedFee:ot.fee, finalFee, adjustmentReason:reason, assessedBy:'Admin', assessedAt:new Date().toISOString(), paymentStatus:finalFee > 0 ? 'unpaid' : 'not_applicable' };
+        r.overtime = { hours:ot.hours, ratePerHour:getVehicle(r.vehicleId)?.ratePerHour || 0, baseFee:ot.baseFee, cleaningFee:ot.cleaningFee, refuelingFee:ot.refuelingFee, calculatedFee:ot.fee, finalFee, tierLabel:ot.tierLabel, fullDayApplied:ot.fullDayApplied, adjustmentReason:reason, assessedBy:'Admin', assessedAt:new Date().toISOString(), paymentStatus:finalFee > 0 ? 'unpaid' : 'not_applicable' };
         const v = getVehicle(r.vehicleId);
         if (v && v.status === 'rented') {
             const openLogs = state.maintenanceLogs.filter(log => log.vehicleId === v.id && log.status === 'open');
@@ -2257,7 +2351,12 @@ function renderAdminVehicles() {
             name: f.elements.namedItem('name').value.trim(), displacement: f.elements.namedItem('displacement').value, brand: f.brand.value.trim(), model: f.model.value.trim(),
             year: Number(f.year.value), plateNumber: f.plateNumber.value.trim(),
             ratePerDay: Number(f.ratePerDay.value), ratePerHour: Number(f.ratePerHour.value),
-            color: f.color.value.trim(), seats: Number(f.seats.value || 2), transmission: f.transmission.value
+            color: f.color.value.trim(), seats: Number(f.seats.value || 2), transmission: f.transmission.value,
+            tracker: {
+                deviceId: f.elements.namedItem('trackerDeviceId')?.value.trim() || '',
+                enabled: f.elements.namedItem('trackerEnabled')?.value !== 'false',
+                lastSeenAt: (id ? getVehicle(id)?.tracker?.lastSeenAt : null) || null
+            }
         };
         if (!Object.hasOwn(DISPLACEMENT_CLASSES, data.displacement)) {
             toast('Select a valid displacement class.', 'error');
@@ -2272,7 +2371,12 @@ function renderAdminVehicles() {
             return;
         }
         if (id) {
-            Object.assign(getVehicle(id), data);
+            const v = getVehicle(id);
+            const prevTracker = v?.tracker ? { ...v.tracker } : null;
+            Object.assign(v, data);
+            if (JSON.stringify(prevTracker) !== JSON.stringify(v.tracker)) {
+                logActivity({module:'Vehicles',action:'Tracker updated',entityId:id,description:v.name,link:'#/admin/vehicles',changes:[{field:'tracker.enabled',previousValue:prevTracker?.enabled,newValue:v.tracker?.enabled},{field:'tracker.deviceId',previousValue:prevTracker?.deviceId,newValue:v.tracker?.deviceId}]});
+            }
             toast('Vehicle updated.', 'success');
         }
         else {
@@ -2393,9 +2497,14 @@ function renderAdminVehicles() {
     state.activityLogs = state.activityLogs || [];
     let auditBaseline = auditSnapshot();
     function logActivity(entry, actorRole = state.role, actorId = state.currentCustomerId) {
-        if (!['admin','customer'].includes(actorRole)) return;
-        state.activityLogs.unshift({id:uid('act'), actorRole, actorId:actorRole === 'admin' ? 'demo-admin' : actorId, actorName:actorRole === 'admin' ? 'Admin' : `Customer (${actorId})`, createdAt:new Date().toISOString(), ...entry});
+        const isAssistant = actorRole === 'assistant' || String(entry?.actorName || '').startsWith('AI Assistant');
+        if (!isAssistant && !['admin','customer'].includes(actorRole)) return;
+        const actorName = entry?.actorName || (actorRole === 'admin' ? 'Admin' : isAssistant ? 'AI Assistant' : `Customer (${actorId})`);
+        const resolvedRole = isAssistant ? 'assistant' : actorRole;
+        const resolvedId = actorRole === 'admin' ? 'demo-admin' : (actorId || state.currentCustomerId || 'unknown');
+        state.activityLogs.unshift({id:uid('act'), actorRole: resolvedRole, actorId: resolvedId, actorName, createdAt:new Date().toISOString(), ...entry, actorName});
     }
+
     function captureActivity(actorRole = state.role, actorId = state.currentCustomerId) {
         const next = auditSnapshot();
         for (const key of new Set([...auditBaseline.keys(), ...next.keys()])) {
@@ -2456,7 +2565,9 @@ function renderAdminVehicles() {
         openMaintenanceModal, saveMaintenance, viewMaintenance, addMaintenancePhotos, removeMaintenancePhoto, resolveLog, openResolveLogModal, submitResolveLog,
         saveAdminNotes, openCustomerModal, editCustomerIdentity, saveCustomerIdentity, reviewCustomerIdentity, closeModal, _confirm: null,
         // Exposed for automated tests and inspection (no UI behavior change)
-        DELIVERY_METHODS, getDeliveryMethod, overlaps, computeFee, computeOvertime, computeEarlyRefund, hasConflict, openRefundSelection, openAssessRefund, assessRefund, openRefundModal, recordRefund, acknowledgeRefund
+        DELIVERY_METHODS, getDeliveryMethod, getOvertimeSettings, overlaps, computeFee, computeOvertime, computeEarlyRefund, hasConflict, openRefundSelection, openAssessRefund, assessRefund, openRefundModal, recordRefund, acknowledgeRefund,
+        getVehicle, getReservation, getCustomer, currentCustomer, reservationsForVehicle, notify, logActivity, captureActivity, uid,
+        getTrackedVehicles: (...a)=>App.Tracking?.getTrackedVehicles?.(...a), isOverdue: (...a)=>App.Tracking?.isOverdue?.(...a), isNoSignal: (...a)=>App.Tracking?.isNoSignal?.(...a), addPing: (...a)=>App.Tracking?.addPing?.(...a)
     };
     document.addEventListener('click', (e) => {
         const dd = $('#notifDropdown'), btn = $('#notifBtn');
