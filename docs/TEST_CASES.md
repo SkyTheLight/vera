@@ -89,7 +89,18 @@
 | TRK-07 | Role guard map | Customer role | Navigate to #/admin/map | Redirected/blocked from admin map | route guard + render guard | PASS | Code-reviewed. |
 | TRK-08 | Simulator label | Admin map, simulator on | Toggle simulator | "Demo data (simulated)" visible; pings added every ~5s | Implemented | PASS | Manual UI recommended. |
 
-## 8. V.E.R.A. Assistant (rule-based v1)
+## 8. Landing page (prototype)
+| Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
+|---|---|---|---|---|---|---|---|
+| LAND-01 | Landing renders logged out | `state.role=null`, `#/` | Render landing | No throw; hero/CTAs present | Rendered with Browse vehicles/How it works | PASS | Unit test. |
+| LAND-02 | Expired promo filter | Seed includes expired promo | Call `App.getLandingPromos()` | Expired promo excluded | `promo-expired` excluded | PASS | Unit test. |
+| LAND-03 | Featured vehicles source | Vehicles in state | Call `App.getFeaturedLandingVehicles()` | All featured IDs exist in `VERA_STATE.vehicles` | All IDs matched | PASS | Unit test. |
+| LAND-04 | Deposit from settings | Change deposit setting | Render landing | Deposit text uses `App.getDepositAmount()` | `₱7,777` shown in test | PASS | Unit test. |
+| LAND-05 | Assistant hidden on landing | Logged out, `#/` | `App.Assistant.syncVisibility()` | Assistant button hidden | Hidden | PASS | Unit test. |
+| LAND-06 | Continue to dashboard | Logged-in customer on `#/` | Render landing | Continue to dashboard shown; no forced redirect | Continue to dashboard shown | PASS | Browser smoke. |
+| LAND-07 | Missing image fallback | Local images absent | Trigger image error/fallback | Gradient+emoji fallback visible, no broken icon | Fallbacks visible | PASS | Browser smoke. |
+
+## 9. V.E.R.A. Assistant (rule-based v1)
 
 | Test Case ID | Feature/module | Preconditions | Test steps | Expected result | Actual result | Status | Remarks |
 |---|---|---|---|---|---|---|---|

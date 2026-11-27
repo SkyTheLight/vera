@@ -620,7 +620,8 @@
     ensureUI();
     const btn = document.getElementById('veraAssistantBtn');
     const panel = document.getElementById('veraAssistantPanel');
-    const show = isCustomerRole();
+    const onLanding = (location.hash || '#/') === '#/' || (location.hash || '') === '#';
+    const show = isCustomerRole() && !onLanding;
     if (btn) btn.classList.toggle('hidden', !show);
     if (panel && !show) { panel.classList.add('hidden'); chat.open = false; }
   }

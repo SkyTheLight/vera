@@ -219,28 +219,29 @@
         location.hash = hash;
     }
     function goHome(e) {
-        if (e)
-            e.preventDefault();
-        navigate(state.role === 'admin' ? '#/admin/dashboard' : (state.role === 'customer' ? '#/customer/vehicles' : '#/'));
+        if (e) e.preventDefault();
+        closeNotifications();
+        closeModal();
+        navigate('#/');
+    }
+    function dashboardHash() {
+        return state.role === 'admin' ? '#/admin/dashboard' : '#/customer/vehicles';
     }
     function route() {
         captureActivity();
         const parts = parseHash();
         state.ui.notifOpen = false;
-        renderChrome();
-        if (!state.role) {
-            renderLanding();
-            return;
-        }
         const [area, page, param, sub] = parts;
+        if (!area) { renderChrome(); renderLanding(); return; }
+        if (area === 'login' || area === 'register') { renderChrome(); renderAuthScreen(area); return; }
+        if (!state.role) { renderChrome(); renderLanding(); return; }
+        renderChrome();
         if (area !== state.role) {
-            navigate(state.role === 'admin' ? '#/admin/dashboard' : '#/customer/vehicles');
+            navigate(dashboardHash());
             return;
         }
-        if (state.role === 'customer')
-            routeCustomer(page, param, sub);
-        else
-            routeAdmin(page, param, sub);
+        if (state.role === 'customer') routeCustomer(page, param, sub);
+        else routeAdmin(page, param, sub);
     }
     function routeCustomer(page, param, sub) {
         switch (page) {
@@ -329,10 +330,17 @@
   }
     function renderChrome() {
         const topbar = $('#topbar'), sidebar = $('#sidebar'), bottomNav = $('#bottomNav');
-        if (!state.role) {
-            topbar.classList.add('hidden');
-            sidebar.classList.add('hidden');
-            bottomNav.classList.add('hidden');
+        const [area] = parseHash();
+        const landingMode = !area;
+        const loggedIn = !!state.role;
+        $('#main').classList.toggle('main-landing', landingMode);
+        $('#main').classList.toggle('main-auth', !loggedIn && !landingMode);
+        topbar.classList.toggle('hidden', landingMode);
+        sidebar.classList.toggle('hidden', landingMode || !loggedIn);
+        bottomNav.classList.toggle('hidden', landingMode || !loggedIn);
+        if (landingMode || !loggedIn) {
+            $('#notifDropdown')?.classList.add('hidden');
+            if (landingMode) return;
             return;
         }
         topbar.classList.remove('hidden');
@@ -341,17 +349,9 @@
         $('#roleBtnCustomer').classList.toggle('active', state.role === 'customer');
         $('#roleBtnAdmin').classList.toggle('active', state.role === 'admin');
         const accountBtn = document.getElementById('accountBtn');
-
         if (accountBtn) {
-            accountBtn.classList.toggle(
-                'hidden',
-                state.role !== 'customer'
-            );
-
-            accountBtn.classList.toggle(
-                'active',
-                location.hash === '#/customer/history'
-            );
+            accountBtn.classList.toggle('hidden', state.role !== 'customer');
+            accountBtn.classList.toggle('active', location.hash === '#/customer/history');
         }
         if (state.role === 'admin' && App.Tracking?.preloadLeaflet) { try { App.Tracking.preloadLeaflet(); } catch (_) {} }
         const items = navItems();
@@ -361,12 +361,8 @@
         const roleNotifs = state.notifications.filter(n => n.role === state.role && (!n.customerId || n.customerId === currentCustomer()?.id)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         const unread = roleNotifs.filter(n => !n.isRead).length;
         const badge = $('#notifBadge');
-        if (unread > 0) {
-            badge.textContent = unread;
-            badge.classList.remove('hidden');
-        }
-        else
-            badge.classList.add('hidden');
+        if (unread > 0) { badge.textContent = unread; badge.classList.remove('hidden'); }
+        else badge.classList.add('hidden');
         $('#notifViewAll').href = state.role === 'admin' ? '#/admin/reservations' : '#/customer/notifications';
         $('#notifList').innerHTML = roleNotifs.length ? roleNotifs.slice(0, 6).map(n => `
       <a href="${esc(n.link)}" class="notif-item ${n.isRead ? '' : 'unread'}" onclick="App.markNotifRead('${n.id}'); App.closeNotifications()">
@@ -377,10 +373,10 @@
         $('#notifDropdown').classList.toggle('hidden', !state.ui.notifOpen);
     }
     function mount(html) {
-        const root = $('#appRoot');
+        const root = $('#appRoot') || $('#app');
         if (root)
             root.innerHTML = html;
-        window.scrollTo({ top: 0 });
+        if (window.scrollTo) window.scrollTo({ top: 0 });
     }
     // ---------- Modals ----------
     function openModal(html) {
@@ -394,51 +390,228 @@
         window.App._confirm = onConfirm;
         openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">${esc(title)}</div><button class="icon-btn" onclick="App.closeModal()" aria-label="Close">&times;</button></div><div class="modal-body">${body}</div><div class="modal-footer"><button class="btn" onclick="App.closeModal()">Cancel</button><button class="btn ${danger ? 'btn-danger-solid' : 'btn-primary'}" onclick="App._confirm && App._confirm();">${esc(confirmLabel)}</button></div></div>`);
     }
-    // ---------- Landing ----------
-    function renderLanding() {
+    function renderAuthScreen(mode) {
+        const isRegister = mode === 'register';
         mount(`
       <div class="auth-wrap">
         <div class="auth-main">
           <div class="auth-box">
+            <a href="#/" class="btn btn-ghost btn-sm" style="margin-bottom:12px;">← Back to home</a>
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px;">
-              <span class="brand-mark" style="width:32px;height:32px;">V</span>
+              <span class="brand-mark" style="width:32px;height:32px;"><img src="images/Logo.png" alt="V.E.R.A. logo" class="brand-logo"></span>
               <div><div style="font-weight:600;font-size:16px;">V.E.R.A.</div><div class="muted small">Vehicle Enterprise Rental Assistant</div></div>
             </div>
-            <h1 style="font-size:22px;font-weight:600;margin-bottom:6px;">Sign in to continue</h1>
-            <p class="muted small" style="margin-bottom:20px;">Select a view to access the rental management workspace.</p>
-            <div class="panel">
-              <div class="panel-body">
-                <div class="stack">
-                  <div>
-                    <div class="field-label" style="margin-bottom:6px;">Customer view</div>
-                    <p class="small muted" style="margin-bottom:8px;">Browse vehicles, check availability, and manage your reservations.</p>
-                    <button class="btn btn-primary btn-block" onclick="App.loginAs('customer')">Continue as Customer</button>
-                  </div>
-                  <div class="divider"></div>
-                  <div>
-                    <div class="field-label" style="margin-bottom:6px;">Administrator view</div>
-                    <p class="small muted" style="margin-bottom:8px;">Review requests, verify payments, and manage fleet operations.</p>
-                    <button class="btn btn-block" onclick="App.loginAs('admin')">Continue as Administrator</button>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <h1 style="font-size:22px;font-weight:600;margin-bottom:6px;">${isRegister ? 'Create demo account' : 'Sign in to continue'}</h1>
+            <p class="muted small" style="margin-bottom:20px;">${isRegister ? 'Prototype demo: choose a role to continue. No real account is created.' : 'Select a view to access the rental management workspace.'}</p>
+            <div class="panel"><div class="panel-body"><div class="stack">
+              <div><div class="field-label" style="margin-bottom:6px;">Customer view</div><p class="small muted" style="margin-bottom:8px;">Browse vehicles, check availability, and manage your reservations.</p><button class="btn btn-primary btn-block" onclick="App.loginAs('customer')">Continue as Customer</button></div>
+              <div class="divider"></div>
+              <div><div class="field-label" style="margin-bottom:6px;">Administrator view</div><p class="small muted" style="margin-bottom:8px;">Review requests, verify payments, and manage fleet operations.</p><button class="btn btn-block" onclick="App.loginAs('admin')">Continue as Administrator</button></div>
+            </div></div></div>
             <p class="faint small" style="margin-top:14px;">Signed-in state is stored locally on this device for convenience.</p>
           </div>
         </div>
-        <div class="auth-aside">
-          <h2>Rental operations in one place</h2>
-          <p>Manage vehicle availability, reservations, payments, and maintenance records with clear status tracking.</p>
-          <ul>
-            <li>Availability checks to prevent overlapping bookings</li>
-            <li>Reservation workflow from request to completion</li>
-            <li>Manual payment verification with proof records</li>
-            <li>Maintenance and incident tracking per vehicle</li>
-            <li>Rental history and basic operational reports</li>
-          </ul>
-        </div>
-      </div>
-    `);
+        <div class="auth-aside"><h2>Rental operations in one place</h2><p>Manage vehicle availability, reservations, payments, and maintenance records with clear status tracking.</p></div>
+      </div>`);
+    }
+
+    // ---------- Landing ----------
+    function landingImage(src, alt, cls, fallbackEmoji='🏍️', fallbackText='Image coming soon') {
+        const safeSrc = esc(src || '');
+        const safeAlt = esc(alt || '');
+        const fb = esc(fallbackEmoji);
+        const txt = esc(fallbackText);
+        return `<div class="landing-media ${esc(cls||'')}">
+          ${safeSrc ? `<img src="${safeSrc}" alt="${safeAlt}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.hidden=false;">` : ''}
+          <div class="landing-media-fallback" ${safeSrc ? 'hidden' : ''}><span aria-hidden="true">${fb}</span><small>${txt}</small></div>
+        </div>`;
+    }
+    function getLandingPromos() {
+        const promos = Array.isArray(state.landing?.promos) ? state.landing.promos : [];
+        const today = todayKey();
+        return promos.filter(p => p && (!p.validUntil || String(p.validUntil).slice(0,10) >= today));
+    }
+    function getFeaturedLandingVehicles() {
+        const count = Math.max(1, Number(state.landing?.featuredCount) || 4);
+        const list = [...(state.vehicles || [])];
+        list.sort((a,b) => {
+            const av = ({available:0,rented:1,maintenance:2,malfunction:3}[String(a.status||'').toLowerCase()] ?? 9);
+            const bv = ({available:0,rented:1,maintenance:2,malfunction:3}[String(b.status||'').toLowerCase()] ?? 9);
+            return av - bv || (Number(a.ratePerDay)||0) - (Number(b.ratePerDay)||0);
+        });
+        return list.slice(0, count);
+    }
+    function scrollLandingTo(id) {
+        const el = document.getElementById(id);
+        if (el) el.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+    }
+    function toggleLandingMenu() {
+        const menu = document.getElementById('landingNavLinks');
+        const btn = document.getElementById('landingMenuBtn');
+        if (!menu || !btn) return;
+        const open = menu.classList.toggle('open');
+        btn.setAttribute('aria-expanded', String(open));
+    }
+    function dismissLandingBanner() { state.ui.landingBannerDismissed = true; renderLanding(); }
+    function renderLanding() {
+        try {
+            const loggedIn = !!state.role;
+            const continueHref = dashboardHash();
+            const browseHref = state.role === 'customer' ? '#/customer/vehicles' : (state.role === 'admin' ? '#/admin/vehicles' : '#/login');
+            const loginHref = '#/login';
+            const signupHref = '#/register';
+            const featured = getFeaturedLandingVehicles();
+            const promos = getLandingPromos();
+            const ads = Array.isArray(state.landing?.ads) ? state.landing.ads : [];
+            const wideAd = ads.find(a => a.slot === 'wide') || ads[0] || null;
+            const cardAd = ads.find(a => a.slot === 'card') || ads[1] || null;
+            const deposit = getDepositAmount();
+            const bannerHidden = !!state.ui.landingBannerDismissed;
+            const faq = [
+                ['Do I pay before approval?', 'No. Submit a request first. After admin approval, you upload GCash or Other payment proof. There is no in-app payment gateway in this prototype.'],
+                ['How does the deposit work?', `A refundable security deposit of ${fmtPHP(deposit)} is shown in the booking estimate. Refund/adjustment is handled by admin in the prototype flow.`],
+                ['What delivery options are available?', 'You can choose Guest Pickup & Guest Return, Guest Pickup & Host Collection, Host Delivery & Guest Return, or Host Delivery & Host Collection. Availability/schedule is confirmed in the rental flow.'],
+                ['Is GPS tracking used?', 'Yes. GPS tracking consent is required during booking for ongoing rentals. Live map monitoring is an admin feature in this prototype.'],
+                ['What happens if I return late?', 'Overtime is calculated at return using the configured overtime rules. You can review the overtime rules from the booking flow.'],
+                ['What payment methods are accepted?', 'After approval, customers upload payment proof for GCash or Other/manual proof. Payment is verified by admin.']
+            ];
+            mount(`
+      <div class="landing-page">
+        ${bannerHidden ? '' : `<div class="landing-banner" role="status"><div class="landing-container landing-banner-inner"><span><strong>Prototype notice:</strong> Promo details are shown for the prototype. Final price follows the booking estimate.</span><button class="icon-btn" aria-label="Dismiss announcement" onclick="App.dismissLandingBanner()">×</button></div></div>`}
+        <header class="landing-header">
+          <div class="landing-container landing-header-inner">
+            <a class="landing-brand" href="#/" onclick="App.goHome(event)"><span class="brand-mark"><img src="images/Logo.png" alt="V.E.R.A. logo" class="brand-logo"></span><span><strong>V.E.R.A.</strong><small>Vehicle Enterprise Rental Assistant</small></span></a>
+            <button id="landingMenuBtn" class="btn btn-ghost landing-menu-btn" type="button" aria-expanded="false" aria-controls="landingNavLinks" onclick="App.toggleLandingMenu()">Menu</button>
+            <nav id="landingNavLinks" class="landing-nav-links" aria-label="Landing navigation">
+              <button type="button" class="link-btn" onclick="App.scrollLandingTo('landing-hero')">Home</button>
+              <button type="button" class="link-btn" onclick="App.scrollLandingTo('landing-vehicles')">Vehicles</button>
+              <button type="button" class="link-btn" onclick="App.scrollLandingTo('landing-promos')">Promos</button>
+              <button type="button" class="link-btn" onclick="App.scrollLandingTo('landing-how')">How it works</button>
+              <button type="button" class="link-btn" onclick="App.scrollLandingTo('landing-faq')">FAQ</button>
+              ${loggedIn ? `<a class="btn btn-primary btn-sm" href="${continueHref}">Continue to dashboard</a>` : `<a class="btn btn-ghost btn-sm" href="${loginHref}">Login</a><a class="btn btn-primary btn-sm" href="${signupHref}">Sign up</a>`}
+            </nav>
+          </div>
+        </header>
+
+        <section id="landing-hero" class="landing-hero">
+          <div class="landing-container landing-hero-grid">
+            <div>
+              <p class="landing-eyebrow">Motorcycle rentals, managed clearly</p>
+              <h1>Ride the right motorcycle with a clear, approval-first rental flow.</h1>
+              <p class="landing-lead">V.E.R.A. helps customers browse motorcycles, request bookings, and track rental steps while admins handle approval, payment verification, and operations.</p>
+              <div class="landing-cta-row">
+                <a class="btn btn-primary" href="${browseHref}">Browse vehicles</a>
+                <button class="btn" type="button" onclick="App.scrollLandingTo('landing-how')">How it works</button>
+                ${loggedIn ? `<a class="btn btn-ghost" href="${continueHref}">Continue to dashboard</a>` : ''}
+              </div>
+              <div class="landing-trust"><span>Admin approval before payment</span><span>GCash / Other proof upload</span><span>GPS consent for ongoing rentals</span></div>
+            </div>
+            <div class="landing-hero-media-wrap">${landingImage('images/landing/hero.jpg', 'Motorcycle rental hero image', 'landing-hero-media', '🏍️', 'Add hero.jpg')}</div>
+          </div>
+        </section>
+
+        <section id="landing-vehicles" class="landing-section">
+          <div class="landing-container">
+            <div class="section-head"><div><p class="landing-eyebrow">Featured vehicles</p><h2>Popular motorcycles ready to request</h2></div><a class="btn btn-ghost btn-sm" href="${browseHref}">View all vehicles</a></div>
+            <div class="landing-vehicle-grid">
+              ${featured.map(v => {
+                const avail = vehicleAvailabilityLabel(v);
+                return `<article class="panel landing-card">
+                  ${landingImage(v.imageUrl || v.imageUrlAlt || '', `${v.brand} ${v.name}`, 'landing-card-media', '🏍️', 'Vehicle image')}
+                  <div class="panel-body">
+                    <div class="landing-card-top"><div><h3>${esc(v.brand)} ${esc(v.name)}</h3><p class="muted small">${esc(String(v.displacement||''))}cc · ${esc(v.transmission||'Manual')}</p></div><span class="status ${avail.bookable ? 'status-available' : 'status-pending'}">${esc(avail.label)}</span></div>
+                    <div class="landing-price">${fmtPHP(v.ratePerDay)} <span class="muted small">/ day</span></div>
+                    <a class="btn btn-primary btn-block" href="${state.role==='customer'?`#/customer/vehicle/${esc(v.id)}`:`#/login`}">View details</a>
+                  </div>
+                </article>`;
+              }).join('') || '<div class="empty">No vehicles available.</div>'}
+            </div>
+          </div>
+        </section>
+
+        <section id="landing-promos" class="landing-section landing-section-alt">
+          <div class="landing-container">
+            <div class="section-head"><div><p class="landing-eyebrow">Promos</p><h2>Current offers and announcements</h2></div></div>
+            <p class="small muted mb-3">Promo details are shown for the prototype. Final price follows the booking estimate.</p>
+            <div class="landing-promo-row">
+              ${promos.map(p => `<article class="panel landing-promo-card">
+                ${landingImage(p.imageUrl, p.title, 'landing-card-media', '🎁', 'Promo image')}
+                <div class="panel-body">
+                  <span class="landing-badge">${esc(p.badge || 'Promo')}</span>
+                  <h3>${esc(p.title)}</h3>
+                  <p class="muted small">${esc(p.description || '')}</p>
+                  <p class="small"><strong>Valid:</strong> ${esc(fmtDateShort(p.validFrom))} - ${esc(fmtDateShort(p.validUntil))}</p>
+                  <p class="faint small">Terms: ${esc(p.terms || 'Prototype display only.')}</p>
+                </div>
+              </article>`).join('') || '<div class="empty">No active promos.</div>'}
+            </div>
+            <div class="landing-ads-grid mt-4">
+              ${wideAd ? `<article class="panel landing-ad landing-ad-wide"><div class="panel-body landing-ad-body">${landingImage(wideAd.imageUrl, wideAd.title, 'landing-ad-media', '📣', 'Ad image')}<div><span class="landing-sponsored">${esc(wideAd.label||'Sponsored')}</span><h3>${esc(wideAd.title||'Partner')}</h3><p class="muted small">${esc(wideAd.description||'Demo partner placement.')}</p><span class="faint small">${esc(wideAd.cta||'Demo content')}</span></div></div></article>` : ''}
+              ${cardAd ? `<article class="panel landing-ad"><div class="panel-body landing-ad-body compact">${landingImage(cardAd.imageUrl, cardAd.title, 'landing-ad-media small', '🤝', 'Ad image')}<div><span class="landing-sponsored">${esc(cardAd.label||'Partner')}</span><h3>${esc(cardAd.title||'Partner')}</h3><p class="muted small">${esc(cardAd.description||'Demo partner placement.')}</p><span class="faint small">${esc(cardAd.cta||'Demo content')}</span></div></div></article>` : ''}
+            </div>
+          </div>
+        </section>
+
+        <section id="landing-how" class="landing-section">
+          <div class="landing-container">
+            <div class="section-head"><div><p class="landing-eyebrow">How it works</p><h2>Simple rental flow</h2></div></div>
+            <div class="landing-steps">
+              ${[['1','Choose model','Browse motorcycles and check availability.'],['2','Pick dates & delivery','Select dates, times, and delivery option in the booking form.'],['3','Request (admin approval)','Submit your request and wait for admin approval.'],['4','Pay after approval','Upload GCash/Other payment proof after approval.'],['5','Pickup, return, deposit refund','Complete rental; overtime/deposit handled per prototype rules.']].map(s=>`<div class="panel landing-step"><div class="panel-body"><div class="landing-step-num">${s[0]}</div><h3>${s[1]}</h3><p class="muted small">${s[2]}</p></div></div>`).join('')}
+            </div>
+          </div>
+        </section>
+
+        <section id="landing-requirements" class="landing-section landing-section-alt">
+          <div class="landing-container landing-two-col">
+            <div class="panel"><div class="panel-body">
+              <p class="landing-eyebrow">Requirements</p><h2>Before you book</h2>
+              <ul class="landing-list">
+                <li>LTO driver's license with Restriction Code A or A1.</li>
+                <li>Valid government ID and complete account details.</li>
+                <li>GPS tracking consent is required during booking.</li>
+                <li>Admin approval is required before payment upload.</li>
+              </ul>
+            </div></div>
+            <div class="panel"><div class="panel-body">
+              <p class="landing-eyebrow">Pricing notes</p><h2>Clear estimate</h2>
+              <ul class="landing-list">
+                <li>Rental fee follows the booking estimate (${esc('App.computeFee')} formula).</li>
+                <li>Refundable security deposit: <strong>${fmtPHP(deposit)}</strong> (from system settings).</li>
+                <li>Total to prepare = rental fee + refundable deposit.</li>
+                <li>Overtime is calculated at return. <button type="button" class="link-btn" onclick="App.openOvertimeRulesModal()">View overtime rules</button>.</li>
+              </ul>
+            </div></div>
+          </div>
+        </section>
+
+        <section id="landing-faq" class="landing-section">
+          <div class="landing-container">
+            <div class="section-head"><div><p class="landing-eyebrow">FAQ</p><h2>Common questions</h2></div></div>
+            <div class="landing-faq">
+              ${faq.map(([q,a],i)=>`<details class="panel landing-faq-item" ${i===0?'open':''}><summary><span>${esc(q)}</span><span aria-hidden="true">+</span></summary><div class="landing-faq-body muted small">${esc(a)}</div></details>`).join('')}
+            </div>
+          </div>
+        </section>
+
+        <footer class="landing-footer">
+          <div class="landing-container landing-footer-grid">
+            <div><strong>V.E.R.A.</strong><p class="muted small">Vehicle Enterprise Rental Assistant</p><p class="faint small">Prototype for academic defense. Demo data only.</p></div>
+            <div><div class="field-label">Contact</div><p class="small muted">Email: vera.rentals@example.com</p><p class="small muted">Phone: +63 900 000 0000</p><p class="small muted">Cainta, Rizal (placeholder)</p></div>
+            <div><div class="field-label">Social</div><p class="small muted">Facebook · Instagram · TikTok (placeholders)</p></div>
+          </div>
+        </footer>
+      </div>`);
+            if (window.matchMedia && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                document.querySelectorAll('.landing-card,.landing-promo-card,.landing-step,.landing-faq-item,.landing-ad').forEach(el => {
+                    el.classList.add('landing-fade');
+                    const obs = new IntersectionObserver((entries,o)=>{ entries.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); o.unobserve(e.target); } }); }, {threshold:.12});
+                    obs.observe(el);
+                });
+            }
+        } catch (err) {
+            console.error('Landing render failed', err);
+            mount(`<div class="auth-wrap"><div class="auth-main"><div class="auth-box"><h1>V.E.R.A.</h1><p class="muted">The landing page encountered an issue.</p><div class="stack"><a class="btn btn-primary" href="#/customer/vehicles">Browse vehicles</a>${state.role ? `<a class="btn" href="${dashboardHash()}">Continue to dashboard</a>` : `<a class="btn" href="#/customer/history">Login</a>`}</div></div></div></div>`);
+        }
     }
     // ---------- Customer: Vehicles ----------
     
@@ -2698,6 +2871,7 @@ function renderAdminVehicles() {
     window.App = {
         filterActivity, viewActivity, exportActivity,
         loginAs, switchRole, goHome, setUI, searchVehicles, render, toggleNotifications, closeNotifications, markAllRead, markNotifRead,
+        scrollLandingTo, toggleLandingMenu, dismissLandingBanner, getLandingPromos, getFeaturedLandingVehicles, renderLanding,
         updateFeePreview, submitReservation, confirmCancelReservation, submitCancelReservation, customerCancel,
         previewProof, submitPayment,
         approveReservation, rejectReservation, openRejectReservationModal, submitRejectReservation,
@@ -2724,19 +2898,6 @@ function renderAdminVehicles() {
         const saved = localStorage.getItem('vera_role');
         if (['admin', 'customer'].includes(saved) && !state.role)
             state.role = saved;
-        if (state.role && (!location.hash || location.hash === '#/' || location.hash === '#')) {
-            navigate(state.role === 'admin' ? '#/admin/dashboard' : '#/customer/vehicles');
-        }
-        else {
-            route();
-        }
+        route();
     });
 })();
-
-
-
-
-
-
-
-

@@ -68,7 +68,13 @@ V.E.R.A. is an **interactive prototype for demonstration and academic purposes**
 - **Simple simulator path:** Waypoints/interpolation around Santo Domingo, Cainta, Rizal are illustrative, not real road routing.
 - **Future real-tracker path:** Physical device -> tracker/provider webhook -> backend API/auth/validation/storage -> `addPing()`/state update -> admin map UI. This prototype intentionally stops at `addPing()` and simulator.
 
-## 9. Assistant v1 limitations
+## 9. Landing page prototype limitations
+- **Display-only promos/ads:** Landing promos and partner/ad slots are seeded demo content. No discount math, no promo code input, no cart/checkout impact, and no change to `App.computeFee`.
+- **Local images only:** Landing/hero/promo/ad images are included under `images/landing/`. Missing files still fall back to CSS gradient/emoji placeholders; no remote image hotlinking.
+- **In-memory banner dismissal:** Promo banner dismissal resets on reload.
+- **Static auth/demo flow:** Login/Sign up buttons route to existing demo role-selection screen; no real authentication, account creation, or backend.
+
+## 10. Assistant v1 limitations
 - **Rule-based, not an LLM:** v1 uses keyword/regex intent matching and simple flow state. It can misunderstand phrasing and supports only implemented intents.
 - **No external AI/API:** No API keys, no network calls, no server-side model. All answers come from in-app data/rules.
 - **In-memory chat:** Chat history resets on reload; no persistence/audit transcript beyond normal reservation/activity records.

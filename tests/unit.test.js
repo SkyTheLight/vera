@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function makeEl() {
+  const classes = new Set();
   return {
     innerHTML: '',
     textContent: '',
@@ -13,7 +14,12 @@ function makeEl() {
     style: {},
     dataset: {},
     children: [],
-    classList: { add(){}, remove(){}, toggle(){}, contains(){ return false; } },
+    classList: {
+      add(...xs){ xs.forEach(x => classes.add(x)); },
+      remove(...xs){ xs.forEach(x => classes.delete(x)); },
+      toggle(x, force){ const on = force === undefined ? !classes.has(x) : !!force; on ? classes.add(x) : classes.delete(x); return on; },
+      contains(x){ return classes.has(x); }
+    },
     setAttribute(){},
     getAttribute(){ return null; },
     removeAttribute(){},
@@ -45,6 +51,7 @@ function loadApp() {
   const storage = new Map();
 
   const document = {
+    activeElement: null,
     addEventListener(type, fn){ (listeners.document[type] ||= []).push(fn); },
     removeEventListener(){},
     getElementById(id){ return elements[id] || (elements[id] = makeEl()); },
@@ -54,6 +61,7 @@ function loadApp() {
       if (sel === '#toast-container') return elements['toast-container'];
       return null;
     },
+    querySelectorAll(){ return []; },
     querySelectorAll(){ return []; },
     createElement(){ return makeEl(); },
     body: makeEl()
@@ -103,7 +111,9 @@ function loadApp() {
   sandbox.window = sandbox;
   sandbox.window.addEventListener = (type, fn) => { (listeners.window[type] ||= []).push(fn); };
   sandbox.window.removeEventListener = () => {};
-  sandbox.window.matchMedia = () => ({ matches: false, addListener(){}, removeListener(){} });
+  sandbox.window.matchMedia = () => ({ matches: false, addListener(){}, removeListener(){}, addEventListener(){}, removeEventListener(){} });
+  sandbox.window.scrollTo = () => {};
+  sandbox.IntersectionObserver = class { constructor(){} observe(){} unobserve(){} disconnect(){} };
 
   vm.createContext(sandbox);
   vm.runInContext(dataCode, sandbox, { filename: 'data.js' });
@@ -463,4 +473,47 @@ test('bookingPrefill is consumed once and cleared after use', () => {
   sandbox.VERA_STATE.ui.bookingPrefill = { vehicleId: 'v1', start: '2026-12-10T00:00:00.000Z', end: '2026-12-12T00:00:00.000Z' };
   const other = sandbox.VERA_STATE.ui.bookingPrefill.vehicleId === 'v2' ? sandbox.VERA_STATE.ui.bookingPrefill : null;
   assert.equal(other, null);
+});
+
+test('landing renders for logged-out state without throwing', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.role = null;
+  sandbox.location.hash = '#/';
+  assert.doesNotThrow(() => sandbox.App.renderLanding());
+  const html = sandbox.document.getElementById('app').innerHTML;
+  assert.match(html, /Browse vehicles/);
+  assert.match(html, /How it works/);
+});
+
+test('expired landing promos are filtered out', () => {
+  const { sandbox } = loadApp();
+  const promos = sandbox.App.getLandingPromos();
+  assert.ok(promos.length >= 1);
+  assert.equal(promos.some(p => p.id === 'promo-expired'), false);
+});
+
+test('featured landing vehicles come from VERA_STATE.vehicles', () => {
+  const { sandbox } = loadApp();
+  const featured = sandbox.App.getFeaturedLandingVehicles();
+  const ids = new Set((sandbox.VERA_STATE.vehicles || []).map(v => v.id));
+  assert.ok(featured.length > 0);
+  assert.ok(featured.every(v => ids.has(v.id)));
+});
+
+test('landing deposit shown comes from App.getDepositAmount()', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.role = null;
+  sandbox.VERA_STATE.settings.depositAmount = 7777;
+  sandbox.App.renderLanding();
+  assert.match(sandbox.document.getElementById('app').innerHTML, /7,777/);
+});
+
+test('assistant is hidden on landing for logged-out visitors', () => {
+  const { sandbox } = loadApp();
+  sandbox.VERA_STATE.role = null;
+  sandbox.location.hash = '#/';
+  sandbox.App.Assistant.syncVisibility();
+  const btn = sandbox.document.getElementById('veraAssistantBtn');
+  assert.ok(btn);
+  assert.equal(btn.classList.contains('hidden'), true);
 });

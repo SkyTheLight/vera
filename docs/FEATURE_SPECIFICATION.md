@@ -129,7 +129,18 @@ Allows a customer to select how the vehicle will be handed over at pickup and re
 - **Logging:** Map access and tracker/simulator enable-disable logged via `logActivity`.
 - **Tests:** Pure helpers `getTrackedVehicles`, `isOverdue`, `isNoSignal`, `addPing` exposed on `window.App` for unit tests.
 
-## 10. V.E.R.A. Assistant (customer chat, rule-based v1)
+## 10. Landing page (prototype)
+- `#/` renders a public landing/splash page for logged-out visitors and for logged-in users (no forced redirect).
+- Logged-in users see **Continue to dashboard**; logged-out users see **Login** / **Sign up** routing to existing demo role-selection auth screens (`#/login`, `#/register`).
+- Sections: hero, dismissible promo banner (in-memory), featured vehicles from `VERA_STATE.vehicles`, promo cards, demo sponsored/partner slots, how-it-works, requirements/pricing, FAQ, footer.
+- Landing data is seeded in `data.js` as `VERA_STATE.landing = { featuredCount, promos, ads }`; promos with `validUntil` before Manila today are filtered out.
+- Promos/ads are **display-only demo content**. No discount math, no promo code input, no change to `App.computeFee`.
+- Featured vehicle cards use existing vehicle data and link to vehicle detail (existing login/role guard applies).
+- Deposit is read from `App.getDepositAmount()`; overtime rules link uses existing overtime modal/settings.
+- Assistant chat bubble is hidden on landing for logged-out visitors.
+- Images are local under `images/landing/` (included in repo); missing images fall back to CSS gradient + emoji. No remote image hotlinking.
+
+## 11. V.E.R.A. Assistant (customer chat, rule-based v1)
 
 - **Scope:** Customer-only floating chat assistant for FAQs, availability checks, booking guidance, and navigation to key actions. Hidden for admin and landing/unauthenticated role.
 - **Architecture:** Isolated `Assistant.respond(userText, context)` returns `{ text, chips?, actions? }`. v1 uses rule-based intent matching and small in-memory flow state; designed so an LLM can replace `respond()` later without touching UI.
