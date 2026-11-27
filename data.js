@@ -371,7 +371,8 @@ const vehicles = [
     notifications: JSON.parse(JSON.stringify(notifications)),
     activityLogs: [],
     locationPings: JSON.parse(JSON.stringify(locationPings)),
-    ui: { notifOpen: false, modal: null }
+    opsServices: [],
+    ui: { notifOpen: false, modal: null, fleetDays: 14, fleetVehicle: 'all', fleetKind: 'all', opsScheduleStart: null }
   };
 })();
 
