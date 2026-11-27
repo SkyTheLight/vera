@@ -35,7 +35,15 @@
     return App.currentCustomer ? App.currentCustomer() : (state.customers || []).find(c => c.id === state.currentCustomerId) || state.customers?.[0];
   }
   function isCustomerRole() { return state.role === 'customer'; }
+  function onLandingPage() { return ['', '#', '#/'].includes(location.hash); }
+  function canUseAssistant() { return onLandingPage() || (isCustomerRole() && location.hash.startsWith('#/customer/')); }
+  function sessionKey() { return isCustomerRole() ? 'customer:' + (currentCustomer()?.id || '') : 'public:' + (state.role || 'guest'); }
+  const PUBLIC_CHIPS = ['Check availability', 'What are the rates?', 'What do I need to rent?', 'How do I book?'];
+  function signInResponse() { return { text: 'Sign in as a customer to submit a reservation, view your rental records or upload payment proof. You can check rates and availability here before signing in.', chips: PUBLIC_CHIPS, actions: [{type:'navigate', route:'#/login', label:'Sign in'}] }; }
+  let lastSession = null;
+  let sessionVersion = 0;
   function customerReservations() {
+    if (!isCustomerRole()) return [];
     const c = currentCustomer();
     if (!c) return [];
     return (state.reservations || []).filter(r => r.customerId === c.id || (!r.customerId && r.customerEmail === c.email));
@@ -87,11 +95,12 @@
       if (typeof App.recommendByBudget === 'function') return App.recommendByBudget(budget, start, end);
       return { ok: false, reason: 'unavailable', items: [], deposit: 5000, budget: 0 };
     },
-    createReservation({ vehicleId, startISO, endISO, deliveryMethod }) {
-      return createReservationThroughExistingFlow({ vehicleId, startISO, endISO, deliveryMethod });
+    createReservation({ vehicleId, startISO, endISO, deliveryMethod, trackingConsentAccepted }) {
+      return createReservationThroughExistingFlow({ vehicleId, startISO, endISO, deliveryMethod, trackingConsentAccepted });
     },
     navigateTo(route) {
       if (typeof route !== 'string' || !route.startsWith('#/')) return { ok: false, reason: 'Invalid route' };
+      if (!isCustomerRole() && route.startsWith('#/customer/')) route = '#/login';
       location.hash = route;
       return { ok: true };
     },
@@ -164,12 +173,13 @@
   }
   function validateBookingInput({ vehicle, startISO, endISO, deliveryMethod, trackingConsentAccepted }) {
     if (!vehicle) return { ok: false, reason: 'Please select a vehicle.' };
+    if (trackingConsentAccepted !== true) return { ok: false, reason: 'GPS tracking consent is required.' };
     if (!startISO || !endISO) return { ok: false, reason: 'Please provide both start and end dates.' };
     const start = new Date(startISO), end = new Date(endISO);
     if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return { ok: false, reason: 'Invalid date format.' };
     if (end <= start) return { ok: false, reason: 'End date/time must be after start date/time.' };
     if (start.getTime() < Date.now() - 60000) return { ok: false, reason: 'Start date/time cannot be in the past.' };
-    if (!['maintenance','malfunction'].includes(vehicle.status) ? false : true) return { ok: false, reason: `Vehicle is currently marked as ${vehicle.status}.` };
+    if (!['available','rented'].includes(vehicle.status)) return { ok: false, reason: `Vehicle is currently marked as ${vehicle.status}.` };
     const conflict = App.hasConflict(vehicle.id, startISO, endISO);
     if (conflict.conflict) return { ok: false, reason: conflict.reason || 'Selected dates overlap an existing booking.' };
     if (!App.DELIVERY_METHODS.includes(deliveryMethod)) return { ok: false, reason: 'Please select a valid delivery method.' };
@@ -180,8 +190,12 @@
     if (!isCustomerRole()) return { ok: false, reason: 'Assistant booking is available for customers only.' };
     const c = currentCustomer();
     if (!c) return { ok: false, reason: 'No customer account selected.' };
+    const restriction = App.customerRestriction?.(c); if (restriction) return {ok:false,reason:restriction};
+    if (typeof App.bookingHasLicense !== 'function' || !App.bookingHasLicense(c)) return {ok:false, reason:'Upload your valid driving license in Account before booking.'};
+    if (App.getLicenseStatus && App.getLicenseStatus(c, {end:endISO}).status !== 'Valid') return {ok:false, reason:'Your license must be valid through the return date.'};
+    if (customerReservations().some(r => r.status === 'completed' && Number(r.overtimeFee) > 0 && (state.payments || []).find(p => p.reservationId === r.id && p.paymentType === 'overtime')?.status !== 'verified')) return {ok:false, reason:'Settle outstanding overtime before requesting another rental.'};
     const vehicle = App.getVehicle(vehicleId);
-    const validation = validateBookingInput({ vehicle, startISO, endISO, deliveryMethod, trackingConsentAccepted: trackingConsentAccepted !== false });
+    const validation = validateBookingInput({ vehicle, startISO, endISO, deliveryMethod, trackingConsentAccepted: trackingConsentAccepted === true });
     if (!validation.ok) return validation;
     // reuse existing business rules by calling same calculation/validation primitives and creating same record shape as submitReservation
     const { total } = App.computeFee(vehicleId, startISO, endISO);
@@ -201,7 +215,8 @@
       approvedBy: null,
       rejectReason: '',
       adminNotes: '',
-      deliveryMethod
+      deliveryMethod,
+      trackingConsent: { accepted: true, at: new Date().toISOString() }
     };
     state.reservations.unshift(r);
     if (App.notify) App.notify('admin', 'New reservation request', `${c.name} requested ${vehicle?.name || 'a vehicle'}.`, '#/admin/reservations');
@@ -227,8 +242,12 @@
   function AssistantRespond(userText, context = {}) {
     const text = String(userText || '').trim();
     const n = norm(text);
+    if (!canUseAssistant()) return {text:'The V.E.R.A. Assistant is available on the home page and customer workspace.', chips:[]};
     if (!isCustomerRole()) {
-      return { text: 'The V.E.R.A. Assistant is available for customer accounts only.', chips: [] };
+      // Public information only; never retrieve demo customer records or submit bookings.
+      if (chat.flow && !['availability','budget'].includes(chat.flow.name)) chat.flow = null;
+      if (/\b(my reservations?|my bookings?|booking status|upload|proof|book|reserve|reservation|rent)\b/.test(n) && !/\b(require|need|required|license|licen[cs]e|id|deposit|available|availability|rate|rates|price|cost|budget)\b/.test(n)) { chat.flow = null; return signInResponse(); }
+      if (/\b(my reservations?|my bookings?|booking status|upload|proof)\b/.test(n)) { chat.flow = null; return signInResponse(); }
     }
 
     // Flow continuation
@@ -242,15 +261,15 @@
     const bIntent = detectBudgetIntent(text);
     if (bIntent) return startBudgetFlow(text, bIntent.amount);
     if (/\b(require|need|required|license|licen[cs]e|id|deposit)\b/.test(n)) return answerRequirements();
-    if (/\b(rate|price|cost|how much|per day)\b/.test(n)) return answerRates(text);
+    if (/\b(rates?|prices?|cost|how much|per day)\b/.test(n)) return answerRates(text);
     if (/\b(overtime|late)\b/.test(n)) return answerOvertime();
     if (/\b(delivery|pickup|pick up|drop off|return method|collection)\b/.test(n)) return answerDelivery();
     if (/\b(cancel|cancellation)\b/.test(n)) return answerCancellation();
     if (/\b(gcash|maya|bank\s*transfer|cash|payment\s*method|pay\s*method|mode\s*of\s*payment)\b/.test(n)) return answerPaymentMethods(text);
     if (/\b(pay|payment|proof|upload|receipt)\b/.test(n)) return answerPayment();
     if (/\b(available|availability|check availability)\b/.test(n) || (parseCategory(n) && /\b(avail|have|book|rent)\b/.test(n))) return startAvailabilityFlow(text);
+    if (/\b(my reservations?|my bookings?|booking status|status)\b/.test(n)) return answerMyReservations();
     if (/\b(book|reserve|reservation|rent)\b/.test(n)) return startBookingFlow(text);
-    if (/\b(my reservation|reservations|booking status|status)\b/.test(n)) return answerMyReservations();
     if (/\b(contact|support|admin|help desk|phone|email)\b/.test(n)) return { text: 'For prototype support, use the in-app reservation/admin flow. If you need admin action (refund, adjustment, manual confirmation), submit your request/reservation and the admin can review it in the dashboard.', chips: ['My reservations', 'Upload my payment'] };
     if (/\b(location|map|track|gps)\b/.test(n)) return { text: 'GPS tracking is used for ongoing rentals with your consent. Customers can see tracking consent on reservation details; live map monitoring is an admin feature in this prototype.', chips: ['How do I book?', 'What do I need to rent?'] };
     if (/\b(refund|deposit)\b/.test(n)) return { text: 'Deposit is P5,000 refundable (prototype rule text). Refunds/adjustments are handled by admin and recorded in the admin Payments & Refunds flow; there is no automated customer refund checkout in-app.', chips: ['Payment methods?', 'My reservations'] };
@@ -297,7 +316,7 @@
   function answerPaymentMethods(text) {
     const n = norm(text);
     const pending = customerReservations().find(r => r.status === 'approved' && !((state.payments||[]).find(p=>p.reservationId===r.id && (p.paymentType||'rental')==='rental')));
-    const action = pending ? [{ type:'navigate', route:`#/customer/reservation/${pending.id}/pay`, label:'Upload payment proof' }] : [{ type:'navigate', route:'#/customer/reservations', label:'Open My Reservations' }];
+    const action = !isCustomerRole() ? [{type:'navigate',route:'#/login',label:'Sign in'}] : pending ? [{ type:'navigate', route:`#/customer/reservation/${pending.id}/pay`, label:'Upload payment proof' }] : [{ type:'navigate', route:'#/customer/reservations', label:'Open My Reservations' }];
     const base = [
       'Payment methods (prototype):',
       '- In-app proof upload: GCash or Other (you upload a screenshot/photo as proof; payment happens outside the app).',
@@ -312,11 +331,13 @@
   }
 
   function answerPayment() {
+    if (!isCustomerRole()) return signInResponse();
     const pending = customerReservations().find(r => r.status === 'approved' && !((state.payments||[]).find(p=>p.reservationId===r.id && (p.paymentType||'rental')==='rental')));
     const action = pending ? [{ type:'navigate', route:`#/customer/reservation/${pending.id}/pay`, label:'Upload payment proof' }, { type:'highlight', target:'upload-payment-proof', label:'Highlight upload button' }] : [{ type:'navigate', route:'#/customer/reservations', label:'Open My Reservations' }];
     return { text: pending ? `You have an approved reservation (${pending.id.toUpperCase()}) awaiting payment proof. Open it and upload your GCash/Other proof.` : 'To upload payment: open an approved reservation in My Reservations, then tap "Upload payment proof" and submit your GCash/Other proof image. In-app checkout is proof-upload only (prototype).', chips: ['Payment methods?', ...DEFAULT_CHIPS.slice(0,4)], actions: action };
   }
   function answerMyReservations() {
+    if (!isCustomerRole()) return signInResponse();
     const mine = customerReservations().slice(0,5);
     if (!mine.length) return { text: 'You have no reservations yet.', chips: ['Check availability', 'How do I book?'] };
     const lines = mine.map(r => `${r.id.toUpperCase()} - ${(App.getVehicle(r.vehicleId)?.name||r.vehicleId)} - ${r.status} - ${fmtDateShort(r.start)} to ${fmtDateShort(r.end)}`);
@@ -375,8 +396,8 @@
         return { text: `No available bikes fit ${fmtPeso(res.budget)} total cash out for ${fmtDateShort(res.startISO)} to ${fmtDateShort(res.endISO)}. Budget includes the refundable ${fmtPeso(res.deposit)} deposit, so only rental fee + deposit within budget is shown. Try fewer days, a smaller cc class (400cc), or different dates.`, chips: ['400cc available?', 'Check availability', 'How do I book?'] };
       }
       const lines = res.items.map((it, i) => `${i+1}. ${it.brand} ${it.name} ${it.displacement}cc - Rental ${fmtPeso(it.rentalFee)} (${it.days} day/s x ${fmtPeso(it.ratePerDay)}) + Deposit ${fmtPeso(it.deposit)} refundable = Total ${fmtPeso(it.total)}`);
-      const actions = res.items.map(it => ({ type:'book-prefill', label:`Book ${it.name}`, vehicleId: it.vehicleId, startISO: it.startISO, endISO: it.endISO }));
-      return { text: `Budget: ${fmtPeso(res.budget)} total cash out (includes refundable ${fmtPeso(res.deposit)} deposit). Available options for ${fmtDateShort(res.startISO)} to ${fmtDateShort(res.endISO)}:\n${lines.join('\n')}\n\nTap "Book ..." to open the booking page with dates prefilled. You'll confirm and submit manually.`, chips: ['Check availability', 'What do I need to rent?'], actions };
+      const actions = res.items.map(it => ({ type:'book-prefill', label:isCustomerRole() ? `Book ${it.name}` : `Sign in to book ${it.name}`, vehicleId: it.vehicleId, startISO: it.startISO, endISO: it.endISO }));
+      return { text: `Budget: ${fmtPeso(res.budget)} total cash out (includes refundable ${fmtPeso(res.deposit)} deposit). Available options for ${fmtDateShort(res.startISO)} to ${fmtDateShort(res.endISO)}:\n${lines.join('\n')}\n\n${isCustomerRole() ? 'Tap "Book ..." to open the booking page with dates prefilled. You will confirm and submit manually.' : 'Sign in as a customer to reserve one of these motorcycles.'}`, chips: ['Check availability', 'What do I need to rent?'], actions };
     }
     chat.flow = null;
     return { text: 'Budget flow reset. How can I help?', chips: DEFAULT_CHIPS };
@@ -389,6 +410,7 @@
     return handleFlow(text, norm(text), {});
   }
   function startBookingFlow(text) {
+    if (!isCustomerRole()) return signInResponse();
     const { vehicle } = findVehicle(text);
     const dates = extractDates(text);
     chat.flow = { name:'booking', step: !vehicle ? 'vehicle' : (dates.length<2 ? 'dates' : 'delivery'), data:{ vehicleId: vehicle?.id || null, startISO: dates[0]?.iso || null, endISO: dates[1]?.iso || null, deliveryMethod: null } };
@@ -425,6 +447,7 @@
       f.data.startISO = dates[0].iso; f.data.endISO = dates[1].iso; f.step = 'ready';
     }
     if (f.step === 'ready') {
+      if (!Number.isFinite(Date.parse(f.data.startISO)) || !Number.isFinite(Date.parse(f.data.endISO)) || Date.parse(f.data.endISO) <= Date.parse(f.data.startISO) || Date.parse(f.data.startISO) < Date.now()-60000) { f.step='dates'; return {text:'Please enter future pickup and return dates, with return after pickup.', chips:[]}; }
       const res = tools.checkAvailability({ vehicleId: f.data.vehicleId, category: f.data.category, startISO: f.data.startISO, endISO: f.data.endISO });
       const available = res.filter(r => r.available);
       chat.flow = null;
@@ -532,14 +555,14 @@
   }
 
   function toggle(open) {
-    chat.open = !!open;
+    chat.open = !!open && canUseAssistant();
     const panel = document.getElementById('veraAssistantPanel');
     const btn = document.getElementById('veraAssistantBtn');
     if (panel) panel.classList.toggle('hidden', !chat.open);
     if (btn) btn.setAttribute('aria-expanded', String(chat.open));
     if (chat.open) {
       if (!chat.messages.length) {
-        chat.messages.push({ role:'assistant', text:'Hi! I\'m the V.E.R.A. Assistant (prototype). I can help with rates, requirements, availability, booking, delivery options, overtime rules, payment methods/proof upload, and where to click.', chips: DEFAULT_CHIPS });
+        chat.messages.push({ role:'assistant', text:'Hi! I\'m the V.E.R.A. Assistant (prototype). I can help with rates, requirements, availability, booking, delivery options, overtime rules, payment methods/proof upload, and where to click.', chips: isCustomerRole() ? DEFAULT_CHIPS : PUBLIC_CHIPS });
       }
       renderChat();
       setTimeout(()=>document.getElementById('veraAssistantInput')?.focus(), 50);
@@ -560,16 +583,20 @@
       return `<div class="${cls}"><div class="assistant-bubble">${esc(m.text).replace(/\n/g,'<br>')}</div>${m.actions?.length ? `<div class="assistant-actions">${m.actions.map((a,i)=>`<button type="button" class="btn btn-sm" data-action-index="${i}" data-msg-role="${m.role}" onclick="App.Assistant.handleAction(this)">${esc(a.label||a.type)}</button>`).join('')}</div>` : ''}</div>`;
     }).join('') + (chat.typing ? `<div class="assistant-msg bot"><div class="assistant-bubble assistant-typing">Typing…</div></div>` : '');
     const last = [...chat.messages].reverse().find(m => m.role === 'assistant' && m.chips?.length);
-    const chips = last?.chips || DEFAULT_CHIPS;
+    const chips = last?.chips || (isCustomerRole() ? DEFAULT_CHIPS : PUBLIC_CHIPS);
     chipsBox.innerHTML = chips.map(c => `<button type="button" class="assistant-chip" onclick="App.Assistant.quickReply(this)">${esc(c)}</button>`).join('');
     box.scrollTop = box.scrollHeight;
   }
 
   function submitUserMessage(text) {
-    if (!isCustomerRole()) return;
+    if (!canUseAssistant()) return;
+    if (chat.typing) return;
+    const version = sessionVersion;
+    const session = sessionKey();
     addMessage('user', text);
     chat.typing = true; renderChat();
     setTimeout(() => {
+      if (version !== sessionVersion || session !== sessionKey() || !canUseAssistant()) { chat.typing = false; return; }
       const resp = safe(() => AssistantRespond(text, { role: state.role, customerId: state.currentCustomerId }), () => ({ text: 'Something went wrong in the assistant. The normal app still works—please use the regular UI.', chips: DEFAULT_CHIPS }));
       chat.typing = false;
       addMessage('assistant', resp.text || 'I can help with availability, rates, requirements, booking, delivery, overtime, and payment methods/proof upload.', resp.chips || DEFAULT_CHIPS, resp.actions || []);
@@ -586,7 +613,10 @@
     const label = btn.textContent;
     const msg = [...chat.messages].reverse().find(m => m.actions?.some(a => (a.label||a.type) === label));
     const action = msg?.actions?.find(a => (a.label||a.type) === label);
-    if (!action) return;
+    if (!action || !canUseAssistant()) return;
+    if (!isCustomerRole() && (action.type === 'book-prefill' || action.type === 'highlight' || action.route?.startsWith('#/customer/'))) {
+      tools.navigateTo('#/login'); return;
+    }
     safe(() => {
       if (action.type === 'navigate') tools.navigateTo(action.route);
       if (action.type === 'highlight') tools.highlight(action.target);
@@ -620,10 +650,15 @@
     ensureUI();
     const btn = document.getElementById('veraAssistantBtn');
     const panel = document.getElementById('veraAssistantPanel');
-    const onLanding = (location.hash || '#/') === '#/' || (location.hash || '') === '#';
-    const show = isCustomerRole() && !onLanding;
+    const session = sessionKey();
+    if (lastSession !== null && lastSession !== session) {
+      sessionVersion++;
+      chat.messages = []; chat.flow = null; chat.typing = false; toggle(false); renderChat();
+    }
+    lastSession = session;
+    const show = canUseAssistant();
     if (btn) btn.classList.toggle('hidden', !show);
-    if (panel && !show) { panel.classList.add('hidden'); chat.open = false; }
+    if (!show) toggle(false);
   }
 
   // wrap render/route to keep UI synced; never break normal UI

@@ -27,6 +27,8 @@
   let simTimer = null;
   let map = null;
   let markersLayer = null;
+  const markersByVehicle = new Map();
+  let pendingMapElement = null;
   let mapResizeObs = null;
   let leafletPromise = null;
   let simProgress = {}; // vehicleId -> {seg, t}
@@ -187,6 +189,13 @@
       };
     }).filter(row => {
       if (filter === 'overdue') return row.overdue;
+      if (filter === 'returns') {
+        const end = new Date(row.reservation.end);
+        const date = new Date(at);
+        if (!row.reservation.end || !Number.isFinite(end.getTime()) || !Number.isFinite(date.getTime())) return false;
+        const day = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'});
+        return day.format(end) === day.format(date);
+      }
       return true;
     }).sort((a, b) => {
       if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
@@ -243,9 +252,6 @@
     const style = document.createElement('style');
     style.id = 'trackingStyles';
     style.textContent = `
-      .tracking-grid { display:grid; grid-template-columns: minmax(0,1.5fr) minmax(320px,1fr); gap:16px; align-items:stretch; }
-      .tracking-map { height: 520px; min-height: 360px; border-radius: 12px; overflow:hidden; border:1px solid var(--border,#25292f); }
-      .tracking-list { max-height: 520px; overflow:auto; }
       .tracking-row { padding:12px 14px; border-bottom:1px solid var(--border,#25292f); cursor:pointer; }
       .tracking-row:hover { background: rgba(255,255,255,0.02); }
       .tracking-row.selected { outline:1px solid rgba(122,162,255,0.45); background: rgba(122,162,255,0.08); }
@@ -255,70 +261,126 @@
       .badge-overdue { background: rgba(255,92,92,0.15); color:#ff8a8a; border:1px solid rgba(255,92,92,0.35); padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
       .badge-nosignal { background: rgba(239,68,68,0.14); color:#fca5a5; border:1px solid rgba(239,68,68,0.35); padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; }
       .badge-demo { background: rgba(122,162,255,0.12); color:#9fc0ff; border:1px solid rgba(122,162,255,0.3); padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
-      .tracking-toolbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:12px; }
       .tracking-filters { display:flex; gap:8px; flex-wrap:wrap; }
       .leaflet-container { background:#111418; font-family: inherit; }
       .tracking-popup { font-size:12px; line-height:1.45; color:#111827; }
       .tracking-popup .muted { color:#4b5563; }
-      @media (max-width: 980px) { .tracking-grid { grid-template-columns: 1fr; } .tracking-map, .tracking-list { max-height:none; min-height:360px; } }
     `;
     document.head.appendChild(style);
   }
 
   function mount(html) { if (App.mount) return App.mount(html); const root = document.getElementById('appRoot'); if (root) root.innerHTML = html; }
 
-  function renderMapPage(preserveMap) {
+  function onMapRoute() { return state.role === 'admin' && location.hash === '#/admin/map'; }
+
+  // A single matching overdue/returning rental is the automatic focus target.
+  function singleFocusTarget(filter, rows) {
+    return ['overdue', 'returns'].includes(filter) && rows.length === 1 ? rows[0] : null;
+  }
+
+  function renderMapPage(preserveMap = true) {
     ensureStyles();
-    if (state.role !== 'admin') { location.hash = '#/'; return; }
+    if (!onMapRoute()) return;
     const filter = state.ui.tracking.filter || 'all';
     const rows = getTrackedVehicles(filter);
+    const existingMap = document.getElementById('trackingMap');
+    if (!existingMap) {
+      const target = singleFocusTarget(filter, rows);
+      if (target) state.ui.tracking.selectedVehicleId = target.vehicle.id;
+    }
     const selected = state.ui.tracking.selectedVehicleId;
     const simOn = !!state.ui.tracking.simulatorOn;
-    const listHtml = rows.length ? rows.map(row => rowHtml(row, selected)).join('') : `<div class="empty"><div class="empty-title">No ongoing rentals</div><div class="small muted">Tracked vehicles appear here when a reservation is ongoing.</div></div>`;
-    const existingMap = document.getElementById('trackingMap');
-    if (preserveMap && existingMap && map) {
+    const collapsed = !!state.ui.tracking.panelCollapsed;
+    const listHtml = rows.length ? rows.map(row => rowHtml(row, selected)).join('') : `<div class="empty"><div class="empty-title">${filter === 'returns' ? 'No rentals awaiting return today' : filter === 'overdue' ? 'No overdue rentals' : 'No ongoing rentals'}</div><div class="small muted">Matching rentals appear here.</div></div>`;
+    if (existingMap && (pendingMapElement === existingMap || map?.getContainer() === existingMap)) {
       const list = document.getElementById('trackingList');
+      const scroll = list?.scrollTop || 0;
       const count = document.getElementById('trackingCount');
       const badge = document.getElementById('trackingDemoBadge');
       if (count) count.textContent = String(rows.length);
-      if (badge) badge.style.display = simOn ? 'inline-flex' : 'none';
-      if (list) list.innerHTML = listHtml;
-      syncMarkers(rows);
+      const title = document.getElementById('trackingListTitle');
+      if (title) title.textContent = filter === 'returns' ? 'Returns today' : filter === 'overdue' ? 'Overdue rentals' : 'Ongoing rentals';
+      if (badge) badge.hidden = !simOn;
+      if (list) { list.innerHTML = listHtml; list.scrollTop = scroll; }
+      for (const button of document.querySelectorAll('#trackingWorkspace [data-tracking-filter]')) {
+        const active = button.dataset.trackingFilter === filter;
+        button.classList.toggle('btn-primary', active);
+        button.setAttribute('aria-pressed', String(active));
+      }
+      const simulator = document.getElementById('trackingSimulator');
+      if (simulator) simulator.checked = simOn;
+      if (map?.getContainer() === existingMap) syncMarkers(rows, false);
       return;
     }
-
+    destroyMap();
     mount(`
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Live Map</h1>
-          <p class="page-desc">Monitor ongoing rentals by location. <span id="trackingDemoBadge" class="badge-demo" style="${simOn ? '' : 'display:none'}">${DEMO_LABEL}</span></p>
+      <section id="trackingWorkspace" class="tracking-workspace" aria-label="Live map workspace">
+        <div id="trackingMap" class="tracking-map" role="region" aria-label="Rented vehicle map"><div class="empty tracking-load"><div class="empty-title">Loading map…</div><div class="small muted">Fetching map library and tiles.</div></div></div>
+        <div class="tracking-toolbar" aria-label="Map filters">
+          <div class="tracking-filters">
+            <button type="button" class="btn btn-sm ${filter==='all'?'btn-primary':''}" data-tracking-filter="all" aria-pressed="${filter==='all'}" onclick="App.Tracking.setFilter('all')">All rented</button>
+            <button type="button" class="btn btn-sm ${filter==='overdue'?'btn-primary':''}" data-tracking-filter="overdue" aria-pressed="${filter==='overdue'}" onclick="App.Tracking.setFilter('overdue')">Overdue</button>
+            <button type="button" class="btn btn-sm ${filter==='returns'?'btn-primary':''}" data-tracking-filter="returns" aria-pressed="${filter==='returns'}" onclick="App.Tracking.setFilter('returns')">Returns today</button>
+          </div>
+          <button type="button" class="btn btn-sm" onclick="App.Tracking.fitVisible()">Fit map</button>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <label class="small muted" style="display:flex;gap:8px;align-items:center"><input type="checkbox" ${simOn ? 'checked' : ''} onchange="App.Tracking.toggleSimulator(this.checked)"> Demo simulator</label>
-        </div>
-      </div>
-      <div class="tracking-toolbar">
-        <div class="tracking-filters">
-          <button class="btn btn-sm ${filter==='all'?'btn-primary':''}" onclick="App.Tracking.setFilter('all')">All rented</button>
-          <button class="btn btn-sm ${filter==='overdue'?'btn-primary':''}" onclick="App.Tracking.setFilter('overdue')">Overdue</button>
-        </div>
-        <div class="small muted"><span id="trackingCount">${rows.length}</span> vehicle(s)</div>
-      </div>
-      <div class="tracking-grid">
-        <div class="panel"><div class="panel-body flush"><div id="trackingMap" class="tracking-map" role="region" aria-label="Rented vehicle map"><div class="empty" style="height:100%"><div class="empty-title">Loading map…</div><div class="small muted">Fetching map library and tiles.</div></div></div></div></div>
-        <div class="panel"><div class="panel-header"><div class="panel-title">Ongoing rentals</div></div><div id="trackingList" class="tracking-list panel-body flush">${listHtml}</div></div>
-      </div>
-      <p class="small muted" style="margin-top:10px">${DEMO_LABEL}. Locations are shown only for ongoing reservations; pings are cleared when a rental is completed.</p>
+        <aside id="trackingOverlay" class="tracking-overlay panel ${collapsed?'tracking-collapsed':''}" aria-label="Ongoing rentals">
+          <div class="panel-header tracking-overlay-header"><div><h1 id="trackingListTitle" class="panel-title">${filter==='returns'?'Returns today':filter==='overdue'?'Overdue rentals':'Ongoing rentals'}</h1><div class="small muted"><span id="trackingCount">${rows.length}</span> vehicle(s)</div></div><button id="trackingPanelToggle" class="btn btn-sm" type="button" aria-expanded="${!collapsed}" aria-controls="trackingOverlayContent" onclick="App.Tracking.togglePanel()">${collapsed?'Show':'Hide'}</button></div>
+          <div id="trackingOverlayContent" class="tracking-overlay-content">
+            <div class="tracking-simulator"><label><input id="trackingSimulator" type="checkbox" ${simOn?'checked':''} onchange="App.Tracking.toggleSimulator(this.checked)"> Demo simulator</label><span id="trackingDemoBadge" class="badge-demo" ${simOn?'':'hidden'}>Running</span></div>
+            <div id="trackingList" class="tracking-list panel-body flush">${listHtml}</div>
+          </div>
+        </aside>
+        <div class="tracking-map-legend" aria-label="Marker legend"><span><i style="background:#22c55e"></i> Ongoing</span><span><i style="background:#ef4444"></i> Overdue</span><span><i style="background:#94a3b8"></i> No signal</span><span class="tracking-demo-note">${DEMO_LABEL}</span></div>
+      </section>
     `);
-
+    const el = document.getElementById('trackingMap');
+    pendingMapElement = el;
     ensureLeaflet().then(() => {
-      if (location.hash !== '#/admin/map') return;
-      initMap(rows);
-    }).catch((e) => {
+      if (!onMapRoute() || pendingMapElement !== el || document.getElementById('trackingMap') !== el) return;
+      pendingMapElement = null;
+      initMap(getTrackedVehicles(state.ui.tracking.filter));
+    }).catch(e => {
       console.error(e);
-      const el = document.getElementById('trackingMap');
-      if (el) el.innerHTML = '<div class="empty" style="height:100%"><div class="empty-title">Map unavailable</div><div class="small muted">Leaflet failed to load. Check internet/CDN access. The list still shows tracked rentals.</div></div>';
+      if (pendingMapElement === el) pendingMapElement = null;
+      if (onMapRoute() && document.getElementById('trackingMap') === el) el.innerHTML = '<div class="empty tracking-load"><div class="empty-title">Map unavailable</div><div class="small muted">Check internet/CDN access. The rental list remains available.</div><button class="btn mt-2" onclick="App.Tracking.renderMapPage(false)">Retry</button></div>';
     });
+  }
+
+  function togglePanel() {
+    state.ui.tracking.panelCollapsed = !state.ui.tracking.panelCollapsed;
+    const collapsed = state.ui.tracking.panelCollapsed;
+    document.getElementById('trackingOverlay')?.classList.toggle('tracking-collapsed', collapsed);
+    const button = document.getElementById('trackingPanelToggle');
+    if (button) { button.textContent = collapsed ? 'Show' : 'Hide'; button.setAttribute('aria-expanded', String(!collapsed)); }
+    requestAnimationFrame(fitVisible);
+  }
+
+  function destroyMap() {
+    pendingMapElement = null;
+    if (mapResizeObs) { mapResizeObs.disconnect(); mapResizeObs = null; }
+    if (map) { try { map.remove(); } catch (_) {} }
+    map = null; markersLayer = null; markersByVehicle.clear();
+  }
+
+  function mapPadding() {
+    const el = document.getElementById('trackingMap');
+    const panel = document.getElementById('trackingOverlay');
+    const toolbar = document.querySelector('#trackingWorkspace .tracking-toolbar');
+    const size = el?.getBoundingClientRect();
+    const overlay = panel?.getBoundingClientRect();
+    if (!size || !overlay) return { padding: [30,30] };
+    const top = Math.min(100, (toolbar?.offsetHeight || 36) + 32);
+    if (window.matchMedia('(max-width: 767.98px)').matches || size.width < 640) {
+      return { paddingTopLeft:[28,top], paddingBottomRight:[28,Math.min(size.height*.55,overlay.height+45)] };
+    }
+    return { paddingTopLeft:[30,top], paddingBottomRight:[Math.min(size.width*.48,overlay.width+32),70] };
+  }
+
+  function fitVisible() {
+    if (!map || !onMapRoute()) return;
+    const bounds = getTrackedVehicles(state.ui.tracking.filter).filter(row => row.ping).map(row => [row.ping.lat,row.ping.lng]);
+    if (bounds.length) { try { map.fitBounds(bounds, {...mapPadding(), maxZoom:15}); } catch (_) {} }
   }
 
   function rowHtml(row, selected) {
@@ -332,13 +394,13 @@
             <div style="font-weight:600">${esc(v.name || 'Vehicle')} <span class="muted small">${esc(v.model || '')}</span></div>
             <div class="small muted">Plate: ${esc(v.plateNumber || '-')} • Renter: ${esc(c.name || r.customerName || '-')}</div>
           </div>
-          <a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}" onclick="event.stopPropagation()">Open</a>
+          <div class="tracking-row-actions"><button type="button" class="btn btn-sm" ${row.ping?'':'disabled'} onclick="event.stopPropagation(); App.Tracking.selectVehicle('${esc(v.id)}')">Focus</button><a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}" onclick="event.stopPropagation()">Open</a></div>
         </div>
         <div class="tracking-badges">${overdueBadge}${signalBadge}</div>
         <div class="tracking-meta">
           <div><span class="muted">Reservation</span><div>${esc(String(r.id).toUpperCase())}</div></div>
           <div><span class="muted">Last update</span><div>${esc(fmtDateTime(row.lastUpdate))}</div></div>
-          <div><span class="muted">Start</span><div>${esc(fmtDateShort(r.start))}</div></div>
+          <div><span class="muted">Start</span><div>${esc(fmtDateTime(r.start))}</div></div>
           <div><span class="muted">Expected return</span><div>${esc(fmtDateTime(r.end))}</div></div>
         </div>
       </div>`;
@@ -350,10 +412,11 @@
       if (el) el.innerHTML = '<div class="empty" style="height:100%"><div class="empty-title">Map unavailable</div><div class="small muted">Leaflet failed to load. Check internet/CDN access. The list still shows tracked rentals.</div></div>';
       return;
     }
-    if (map) { try { map.remove(); } catch (_) {} map = null; markersLayer = null; }
+    if (map) { try { map.remove(); } catch (_) {} map = null; markersLayer = null; markersByVehicle.clear(); }
     if (mapResizeObs) { try { mapResizeObs.disconnect(); } catch (_) {} mapResizeObs = null; }
     el.innerHTML = '';
-    map = window.L.map(el, { zoomControl: true, preferCanvas: true }).setView([14.5889, 121.1065], 14);
+    map = window.L.map(el, { zoomControl: false, preferCanvas: true }).setView([14.5889, 121.1065], 14);
+    window.L.control.zoom({position:'bottomleft'}).addTo(map);
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
@@ -361,54 +424,84 @@
       keepBuffer: 2
     }).addTo(map);
     markersLayer = window.L.layerGroup().addTo(map);
-    syncMarkers(rows);
-    requestAnimationFrame(() => { try { map.invalidateSize(); } catch (_) {} });
-    setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 250);
+    syncMarkers(rows, false);
+    const currentMap = map;
+    requestAnimationFrame(() => {
+      if (map !== currentMap || !onMapRoute()) return;
+      try {
+        map.invalidateSize();
+        const filter = state.ui.tracking.filter;
+        const target = singleFocusTarget(filter, getTrackedVehicles(filter));
+        if (target) state.ui.tracking.selectedVehicleId = target.vehicle.id;
+        if (target?.ping && markersByVehicle.has(target.vehicle.id)) selectVehicle(target.vehicle.id);
+        else fitVisible();
+      } catch (e) { console.error('[Tracking] Initial map focus failed', e); }
+    });
+    setTimeout(() => { if (map !== currentMap) return; try { map.invalidateSize(); } catch (_) {} }, 250);
     if (window.ResizeObserver) {
       mapResizeObs = new ResizeObserver(() => { try { map && map.invalidateSize(); } catch (_) {} });
       mapResizeObs.observe(el);
     }
   }
 
-  function syncMarkers(rows) {
+  function syncMarkers(rows, fit = false) {
     if (!map || !window.L) return;
     if (!markersLayer) markersLayer = window.L.layerGroup().addTo(map);
-    markersLayer.clearLayers();
-    const bounds = [];
+    const keep = new Set();
     rows.forEach(row => {
-      const p = row.ping;
-      const lat = p ? p.lat : 14.5889 + (Math.random()-0.5)*0.01;
-      const lng = p ? p.lng : 121.1065 + (Math.random()-0.5)*0.01;
-      if (!row.ping) return; // no pin until there is a ping; show in list as no signal
-      const color = row.noSignal ? '#94a3b8' : (row.overdue ? '#ef4444' : '#22c55e');
-      const icon = window.L.divIcon({
-        className: '',
-        html: `<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 0 0 2px rgba(0,0,0,.25)"></div>`,
-        iconSize: [16,16], iconAnchor: [8,8]
-      });
-      const marker = window.L.marker([lat, lng], { icon }).addTo(markersLayer);
+      if (!row.ping) return;
+      const {lat,lng} = row.ping;
       const v = row.vehicle, r = row.reservation, c = row.customer;
-      marker.bindPopup(`<div class="tracking-popup"><strong>${esc(v.name||'')}</strong> ${esc(v.model||'')}<br><span class="muted">Plate:</span> ${esc(v.plateNumber||'-')}<br><span class="muted">Renter:</span> ${esc(c.name||r.customerName||'-')}<br><span class="muted">Reservation:</span> ${esc(String(r.id).toUpperCase())}<br><span class="muted">Start:</span> ${esc(fmtDateShort(r.start))}<br><span class="muted">Expected return:</span> ${esc(fmtDateTime(r.end))}<br>${row.overdue?'<strong style="color:#dc2626">OVERDUE</strong><br>':''}<span class="muted">Last update:</span> ${esc(fmtDateTime(row.lastUpdate))}<br><a href="#/admin/reservation/${esc(r.id)}">Open reservation</a><br><span class="muted">${DEMO_LABEL}</span></div>`);
-      marker.on('click', () => selectVehicle(v.id, false));
-      bounds.push([lat, lng]);
+      const key = v.id;
+      keep.add(key);
+      const color = row.noSignal ? '#94a3b8' : (row.overdue ? '#ef4444' : '#22c55e');
+      const makeIcon = () => window.L.divIcon({className:'',html:`<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 0 0 2px rgba(0,0,0,.25)"></div>`,iconSize:[16,16],iconAnchor:[8,8]});
+      const content = `<div class="tracking-popup"><strong>${esc(v.name||'')}</strong> ${esc(v.model||'')}<br><span class="muted">Plate:</span> ${esc(v.plateNumber||'-')}<br><span class="muted">Renter:</span> ${esc(c.name||r.customerName||'-')}<br><span class="muted">Reservation:</span> ${esc(String(r.id).toUpperCase())}<br><span class="muted">Start:</span> ${esc(fmtDateTime(r.start))}<br><span class="muted">Expected return:</span> ${esc(fmtDateTime(r.end))}<br>${row.overdue?'<strong style="color:#dc2626">OVERDUE</strong><br>':''}<span class="muted">Last update:</span> ${esc(fmtDateTime(row.lastUpdate))}<br><a href="#/admin/reservation/${esc(r.id)}">Open reservation</a><br><span class="muted">${DEMO_LABEL}</span></div>`;
+      let entry = markersByVehicle.get(key);
+      if (!entry) {
+        const marker = window.L.marker([lat,lng],{icon:makeIcon()}).addTo(markersLayer);
+        marker.bindPopup(content);
+        marker.on('click', () => selectVehicle(key,false));
+        entry = {marker,color,content}; markersByVehicle.set(key,entry);
+      } else {
+        entry.marker.setLatLng([lat,lng]);
+        if (entry.color !== color) { entry.marker.setIcon(makeIcon()); entry.color = color; }
+        if (entry.content !== content) { entry.marker.setPopupContent(content); entry.content = content; }
+      }
     });
-    if (bounds.length) {
-      try { map.fitBounds(bounds, { padding: [30,30], maxZoom: 15 }); } catch (_) {}
-    }
+    for (const [key,entry] of markersByVehicle) if (!keep.has(key)) { markersLayer.removeLayer(entry.marker); markersByVehicle.delete(key); }
+    if (fit) fitVisible();
   }
 
   function selectVehicle(vehicleId, pan = true) {
+    if (!onMapRoute()) return;
     state.ui.tracking.selectedVehicleId = vehicleId;
     const row = getTrackedVehicles(state.ui.tracking.filter).find(r => r.vehicle.id === vehicleId);
     renderMapPage(true);
     if (pan && row?.ping && map) {
-      try { map.setView([row.ping.lat, row.ping.lng], Math.max(map.getZoom(), 15)); } catch (_) {}
+      try {
+        const zoom = Math.max(map.getZoom(),15);
+        const opts = mapPadding();
+        const left = opts.paddingTopLeft || opts.padding || [30,30];
+        const right = opts.paddingBottomRight || opts.padding || [30,30];
+        const point = map.project([row.ping.lat,row.ping.lng],zoom);
+        const center = map.unproject(point.add([(right[0]-left[0])/2,(right[1]-left[1])/2]),zoom);
+        map.setView(center,zoom);
+        markersByVehicle.get(vehicleId)?.marker.openPopup();
+      } catch (_) {}
     }
   }
 
   function setFilter(filter) {
-    state.ui.tracking.filter = filter === 'overdue' ? 'overdue' : 'all';
+    if (!onMapRoute()) return;
+    state.ui.tracking.filter = ['overdue','returns'].includes(filter) ? filter : 'all';
+    const rows = getTrackedVehicles(state.ui.tracking.filter);
+    if (!rows.some(r => r.vehicle.id === state.ui.tracking.selectedVehicleId)) state.ui.tracking.selectedVehicleId = null;
+    const target = singleFocusTarget(state.ui.tracking.filter, rows);
+    if (target) state.ui.tracking.selectedVehicleId = target.vehicle.id;
     renderMapPage(true);
+    if (target?.ping && map && markersByVehicle.has(target.vehicle.id)) selectVehicle(target.vehicle.id);
+    else fitVisible();
   }
 
   // ---------- Hooks / integration ----------
@@ -420,7 +513,7 @@
       }
     });
     // stop simulator if leaving map
-    if (location.hash !== '#/admin/map' && simTimer) { clearInterval(simTimer); simTimer = null; }
+    if (!onMapRoute()) { stopSimulator(); destroyMap(); }
   }
 
   // Wrap App.render to enforce cleanup
@@ -435,7 +528,7 @@
   // Expose API
   App.Tracking = {
     addPing, getTrackedVehicles, isOverdue, isNoSignal, clearPingsForReservation,
-    renderMapPage, toggleSimulator, setFilter, selectVehicle, ensureLeaflet, preloadLeaflet,
+    renderMapPage, toggleSimulator, setFilter, selectVehicle, togglePanel, fitVisible, ensureLeaflet, preloadLeaflet,
     _state: state.ui.tracking, _stopSimulator: stopSimulator, _DEMO_LABEL: DEMO_LABEL
   };
   window.Tracking = App.Tracking;
@@ -448,8 +541,10 @@
 
   // route hook: if hash is admin/map, render it (app.js will also be patched; this is fallback)
   window.addEventListener('hashchange', () => {
-    if (location.hash === '#/admin/map') {
-      try { renderMapPage(false); } catch (e) { console.error(e); }
-    }
+    try { onRender(); if (onMapRoute() && !document.getElementById('trackingWorkspace')) renderMapPage(false); } catch (e) { console.error(e); }
   });
 })();
+
+
+
+

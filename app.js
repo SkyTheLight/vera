@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 // V.E.R.A. App (vanilla JS, hash router, in-memory state)
 (function () {
     'use strict';
@@ -78,18 +70,74 @@
     function reservationsForVehicle(vehicleId) {
         return state.reservations.filter(r => r.vehicleId === vehicleId);
     }
+    // Operational occupancy is derived; mechanical condition is independently managed.
+    function manualVehicleCondition(v) {
+        if (!['available','maintenance','malfunction'].includes(v.manualCondition)) {
+            const hasOpen = (state.maintenanceLogs || []).some(l => l.vehicleId === v.id && l.status === 'open');
+            v.manualCondition = !hasOpen && ['maintenance','malfunction'].includes(v.status) ? v.status : 'available';
+        }
+        return v.manualCondition;
+    }
+    // An open record sets the minimum mechanical condition independently of a manual hold.
+    function vehicleRecordCondition(v) {
+        const logs = (state.maintenanceLogs || []).filter(l => l.vehicleId === v.id && l.status === 'open');
+        return logs.some(l => l.type === 'incident') ? 'malfunction' : logs.length ? 'maintenance' : 'available';
+    }
+    function vehicleOperationalState(v, now = Date.now()) {
+        const manual = manualVehicleCondition(v);
+        const record = vehicleRecordCondition(v);
+        const malfunction = manual === 'malfunction' || record === 'malfunction';
+        const condition = malfunction ? 'malfunction' : manual === 'maintenance' || record === 'maintenance' ? 'maintenance' : 'available';
+        const service = (state.opsServices || []).some(m => m.vehicleId === v.id && m.status === 'scheduled' && Date.parse(m.start) <= now && now < Date.parse(m.end));
+        const rented = reservationsForVehicle(v.id).some(r => r.status === 'ongoing');
+        const reserved = reservationsForVehicle(v.id).some(r => r.status === 'approved' && Date.parse(r.start) <= now && now < Date.parse(r.end));
+        const maintenance = condition !== 'available' || service;
+        const status = rented ? 'rented' : condition !== 'available' ? condition : service ? 'maintenance' : reserved ? 'reserved' : 'available';
+        return {v, rented, reserved, malfunction, maintenance, service, condition, status, available:status === 'available'};
+    }
+    function syncVehicleStatus(v) {
+        // Compatibility cache used by the existing assistant. Scheduled service is date-specific.
+        const f = vehicleOperationalState(v);
+        // Keep the public/legacy cache neutral for the customer assistant; admin uses the derived condition.
+        v.status = f.rented ? 'rented' : f.condition !== 'available' ? 'maintenance' : f.reserved ? 'reserved' : 'available';
+        return f;
+    }
+    function syncVehicleStatuses() { state.vehicles.forEach(syncVehicleStatus); }
+    function isAdminVehicleView() { return state.role === 'admin' && location.hash.startsWith('#/admin/'); }
+    function vehicleOperationalBadges(v, showOverdue = isAdminVehicleView()) {
+        const f = vehicleOperationalState(v);
+        const badges = [statusBadge(f.status, showOverdue)];
+        if (showOverdue && reservationsForVehicle(v.id).some(r => rentalIsOverdue(r))) badges.push('<span class="status status-rejected">Overdue</span>');
+        if (f.rented && f.condition !== 'available') badges.push(statusBadge(f.condition, showOverdue));
+        else if (f.rented && f.service) badges.push(statusBadge('maintenance'));
+        return `<div style="display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px">${badges.join('')}</div>`;
+    }
     function overlaps(aStart, aEnd, bStart, bEnd) {
         return new Date(aStart) < new Date(bEnd) && new Date(aEnd) > new Date(bStart);
+    }
+    // An overdue rental blocks today only for new bookings; physical release still requires its return.
+    function rentalIsOverdue(r, now = Date.now()) {
+        return r.status === 'ongoing' && Number.isFinite(Date.parse(r.end)) && Date.parse(r.end) <= now;
+    }
+    function reservationOccupancyEnd(r, now = Date.now()) {
+        const nextDay = new Date(Date.parse(toManilaDateKey(new Date(now).toISOString()) + 'T00:00:00+08:00') + 86400000).toISOString();
+        return rentalIsOverdue(r, now) ? nextDay : (r.status === 'completed' && r.actualReturn ? r.actualReturn : r.end);
+    }
+    function reservationOccupies(r, start, end, now = Date.now()) {
+        return overlaps(start, end, r.start, reservationOccupancyEnd(r, now));
     }
     function hasConflict(vehicleId, start, end, excludeId) {
         const v = getVehicle(vehicleId);
         if (!v)
             return { conflict: true, reason: 'Vehicle not found.' };
-        if (v.status === 'maintenance' || v.status === 'malfunction')
-            return { conflict: true, reason: `Vehicle is currently marked as ${v.status}.` };
+        const condition = vehicleOperationalState(v).condition;
+        if (condition !== 'available')
+            return { conflict: true, reason: `Vehicle is currently marked as ${isAdminVehicleView() ? condition : 'maintenance'}.` };
         const blocking = reservationsForVehicle(vehicleId).filter(r => (r.status === 'approved' || r.status === 'ongoing') && r.id !== excludeId);
+        const late = blocking.find(r => rentalIsOverdue(r) && reservationOccupies(r, start, end));
+        if (late) return { conflict:true, reason: state.role === 'admin' && location.hash.startsWith('#/admin/') ? 'Motorcycle is awaiting return today. Choose a later date; release still requires the previous rental to be completed.' : 'This motorcycle is temporarily unavailable for the selected dates. Please choose another motorcycle.', conflictRes:late };
         for (const r of blocking) {
-            if (overlaps(start, end, r.start, r.end))
+            if (reservationOccupies(r, start, end))
                 return { conflict: true, reason: `Overlaps with an existing rental (${fmtDateShort(r.start)}–${fmtDateShort(r.end)}).`, conflictRes: r };
         }
         const service = (state.opsServices || []).find(m => m.vehicleId === vehicleId && m.status === 'scheduled' && overlaps(start,end,m.start,m.end));
@@ -185,10 +233,10 @@
             setTimeout(() => el.remove(), 180);
         }, 2800);
     }
-    function statusBadge(status) {
-        const labels = { pending: 'Pending', approved: 'Approved', ongoing: 'Ongoing', completed: 'Completed', cancelled: 'Cancelled', rejected: 'Rejected', available: 'Available', rented: 'Rented', maintenance: 'Maintenance', malfunction: 'Malfunction', verified: 'Verified', open: 'Open', resolved: 'Resolved' };
-        const s = status || 'neutral';
-        return `<span class="status status-${esc(s)}">${esc(labels[s] || s)}</span>`;
+    function statusBadge(status, revealFault = isAdminVehicleView()) {
+        const labels = { pending: 'Pending', approved: 'Approved', ongoing: 'Ongoing', completed: 'Completed', cancelled: 'Cancelled', rejected: 'Rejected', available: 'Available', reserved: 'Reserved', rented: 'Rented', maintenance: 'Maintenance', malfunction: 'Malfunction', verified: 'Verified', open: 'Open', resolved: 'Resolved' };
+        const s = status === 'malfunction' && !revealFault ? 'maintenance' : (status || 'neutral');
+        return `<span class="status status-${esc(s === 'reserved' ? 'approved' : s)}">${esc(labels[s] || s)}</span>`;
     }
     function timelineHTML(status) {
         const flow = ['pending', 'approved', 'ongoing', 'completed'];
@@ -238,13 +286,14 @@
         return state.role === 'admin' ? '#/admin/dashboard' : '#/customer/vehicles';
     }
     function route() {
+        syncVehicleStatuses();
         captureActivity();
         const parts = parseHash();
         state.ui.notifOpen = false;
         const [area, page, param, sub] = parts;
         if (!area) { renderChrome(); renderLanding(); return; }
         if (area === 'login' || area === 'register') { renderChrome(); renderAuthScreen(area); return; }
-        if (!state.role) { renderChrome(); renderLanding(); return; }
+        if (!state.role) { navigate('#/'); return; }
         renderChrome();
         if (area !== state.role) {
             navigate(dashboardHash());
@@ -280,6 +329,9 @@
     function routeAdmin(page, param, sub) {
         if (state.role !== 'admin') { navigate('#/'); return; }
         switch (page) {
+            case 'notifications':
+                renderNotificationCenter();
+                break;
             case 'dashboard':
                 renderAdminDashboard();
                 break;
@@ -288,7 +340,7 @@
                 if (App.Tracking?.renderMapPage) App.Tracking.renderMapPage(false); else mount('<div class="empty"><div class="empty-title">Map module unavailable</div></div>');
                 break;
             case 'vehicles':
-                renderAdminVehicles();
+                renderAdminVehicles(param);
                 break;
             case 'reservations':
                 renderAdminReservations();
@@ -297,7 +349,7 @@
                 renderAdminReservationDetail(param);
                 break;
             case 'payments':
-                renderAdminPayments();
+                renderAdminPayments(param);
                 break;
             case 'maintenance':
                 renderAdminMaintenance();
@@ -305,11 +357,17 @@
             case 'schedule':
                 renderAdminSchedule();
                 break;
+            case 'settings':
+                renderAdminSettings();
+                break;
             case 'reports':
                 renderAdminReports();
                 break;
             case 'activity':
                 renderActivityLog();
+                break;
+            case 'customer':
+                renderAdminCustomerProfile(param, sub);
                 break;
             case 'customers':
                 renderAdminCustomers();
@@ -330,7 +388,8 @@
               { href: '#/admin/maintenance', label: 'Maintenance' },
               { href: '#/admin/reports', label: 'Reports' },
               { href: '#/admin/customers', label: 'Customers' },
-              { href: '#/admin/activity', label: 'Activity Log' }
+              { href: '#/admin/activity', label: 'Activity Log' },
+              { href: '#/admin/settings', label: 'Settings' }
           ];
       }
 
@@ -339,11 +398,38 @@
           { href: '#/customer/reservations', label: 'Reservations' }
       ];
   }
+    // The public landing page must not inherit the dashboard's constrained page width.
+    function syncLandingViewport(active) {
+        document.body.classList.toggle('vera-public-landing', active);
+        if (document.getElementById('vera-landing-viewport-css')) return;
+        const style = document.createElement('style');
+        style.id = 'vera-landing-viewport-css';
+        style.textContent = `
+        body.vera-public-landing{margin:0!important;padding:0!important;width:100%;min-height:100vh;max-width:none!important}
+        body.vera-public-landing #app,
+        body.vera-public-landing #app>.app-body,
+        body.vera-public-landing #main,
+        body.vera-public-landing #appRoot{width:100%!important;max-width:none!important;min-width:0!important;margin:0!important;padding:0!important;box-sizing:border-box!important;height:auto!important;max-height:none!important;overflow:visible!important}
+        body.vera-public-landing #app{min-height:100vh}
+        body.vera-public-landing #app>.app-body{display:block!important}
+        body.vera-public-landing #topbar,
+        body.vera-public-landing #sidebar,
+        body.vera-public-landing #bottomNav{display:none!important}
+        body.vera-public-landing .landing-page{width:100%!important;max-width:none!important;min-width:0;margin:0!important;padding:0!important;min-height:100vh;box-sizing:border-box}
+        body.vera-public-landing .landing-page .landing-container{width:100%!important;max-width:none!important;margin:0 auto;box-sizing:border-box;padding-inline:clamp(16px,4vw,72px)}
+        body.vera-public-landing .landing-page .landing-hero-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+        body.vera-public-landing .landing-page .landing-hero-grid>*{min-width:0}
+        body.vera-public-landing .landing-page .landing-hero h1{max-width:100%;overflow-wrap:anywhere}
+        @media(max-width:800px){body.vera-public-landing .landing-page .landing-hero-grid{grid-template-columns:minmax(0,1fr)}}
+        `;
+        document.head.appendChild(style);
+    }
     function renderChrome() {
         const topbar = $('#topbar'), sidebar = $('#sidebar'), bottomNav = $('#bottomNav');
         const [area] = parseHash();
         const landingMode = !area;
         const loggedIn = !!state.role;
+        syncLandingViewport(landingMode);
         $('#main').classList.toggle('main-landing', landingMode);
         $('#main').classList.toggle('main-auth', !loggedIn && !landingMode);
         topbar.classList.toggle('hidden', landingMode);
@@ -369,16 +455,17 @@
         if (state.role === 'admin' && App.Tracking?.preloadLeaflet) { try { App.Tracking.preloadLeaflet(); } catch (_) {} }
         const items = navItems();
         const hash = location.hash || '#/';
-        $('#sidebarNav').innerHTML = items.map(it => `<a href="${it.href}" class="nav-link ${hash.startsWith(it.href) ? 'active' : ''}"><span class="nav-dot"></span><span>${esc(it.label)}</span></a>`).join('');
-        $('#bottomNavInner').innerHTML = items.map(it => `<a href="${it.href}" class="${hash.startsWith(it.href) ? 'active' : ''}"><span class="bn-dot"></span><span>${esc(it.label)}</span></a>`).join('');
-        const roleNotifs = state.notifications.filter(n => n.role === state.role && (!n.customerId || n.customerId === currentCustomer()?.id)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        $('#sidebarNav').innerHTML = items.map(it => `<a href="${it.href}" class="nav-link ${(hash.startsWith(it.href) || (it.href==='#/admin/customers' && hash.startsWith('#/admin/customer/'))) ? 'active' : ''}"><span class="nav-dot"></span><span>${esc(it.label)}</span></a>`).join('');
+        $('#bottomNavInner').innerHTML = items.map(it => `<a href="${it.href}" class="${(hash.startsWith(it.href) || (it.href==='#/admin/customers' && hash.startsWith('#/admin/customer/'))) ? 'active' : ''}"><span class="bn-dot"></span><span>${esc(it.label)}</span></a>`).join('');
+        const roleNotifs = notificationInbox();
         const unread = roleNotifs.filter(n => !n.isRead).length;
         const badge = $('#notifBadge');
         if (unread > 0) { badge.textContent = unread; badge.classList.remove('hidden'); }
         else badge.classList.add('hidden');
-        $('#notifViewAll').href = state.role === 'admin' ? '#/admin/reservations' : '#/customer/notifications';
+        $('#notifViewAll').href = '#/'+state.role+'/notifications';
+        $('#notifViewAll').onclick = e => {e.preventDefault(); ncViewAll();};
         $('#notifList').innerHTML = roleNotifs.length ? roleNotifs.slice(0, 6).map(n => `
-      <a href="${esc(n.link)}" class="notif-item ${n.isRead ? '' : 'unread'}" onclick="App.markNotifRead('${n.id}'); App.closeNotifications()">
+      <a href="${esc(notificationDestination(n)||'#/'+state.role+'/notifications')}" class="notif-item ${n.isRead ? '' : 'unread'}" data-id="${esc(n.id)}" onclick="event.preventDefault(); App.ncOpen(this.dataset.id)">
         <div class="notif-item-title">${esc(n.title)}</div>
         <div class="notif-item-body">${esc(n.body)}</div>
         <div class="notif-item-time">${fmtDate(n.createdAt, { time: true })}</div>
@@ -429,6 +516,34 @@
     }
 
     // ---------- Landing ----------
+    function landingLayoutStyles() {
+        return `<style>
+        .landing-page .landing-media{position:relative;overflow:hidden;display:block;padding:0;box-sizing:border-box;min-height:0;min-width:0}
+        .landing-page .landing-media>img{display:block;width:100%;height:100%;object-fit:contain;object-position:center;background:#fff;position:static;margin:0}
+        .landing-page .landing-media-fallback[hidden]{display:none!important}
+        .landing-page .landing-media-fallback:not([hidden]){position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:var(--panel,#161b22);text-align:center}
+        .landing-page .landing-hero-media{height:auto;aspect-ratio:16/10;border-radius:12px;background:#fff}
+        .landing-page .landing-card-media{height:auto;aspect-ratio:16/10;background:#fff;border-radius:0}
+        .landing-page #landing-promos .landing-promo-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;align-items:stretch;margin:0}
+        .landing-page #landing-promos .landing-promo-card{display:flex;flex-direction:column;min-width:0;width:auto;max-width:none;margin:0;overflow:hidden;border-radius:10px}
+        .landing-page #landing-promos .landing-promo-card>.panel-body{display:flex;flex-direction:column;align-items:flex-start;flex:1;gap:10px;padding:18px;min-width:0;overflow-wrap:anywhere}
+        .landing-page #landing-promos .landing-promo-card h3{margin:0;font-size:17px;line-height:1.35}
+        .landing-page #landing-promos .landing-promo-card p{margin:0;line-height:1.5}
+        .landing-page #landing-promos .landing-promo-card .promo-description{flex:1}
+        .landing-page #landing-promos .landing-promo-card .promo-validity{padding-top:12px;border-top:1px solid var(--border,#30363d);width:100%;box-sizing:border-box}
+        .landing-page #landing-promos .landing-ads-title{margin:30px 0 12px;font-size:17px;font-weight:600}
+        .landing-page #landing-promos .landing-ads-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:0;align-items:stretch}
+        .landing-page #landing-promos .landing-ad{grid-column:auto;min-width:0;margin:0;border-radius:10px;overflow:hidden}
+        .landing-page #landing-promos .landing-ad-body{display:grid;grid-template-columns:minmax(0,38%) minmax(0,1fr);align-items:center;gap:16px;padding:16px;height:100%;box-sizing:border-box}
+        .landing-page #landing-promos .landing-ad-media{width:100%;height:auto;min-height:0;max-width:none;aspect-ratio:16/10;border-radius:7px;background:#fff}
+        .landing-page #landing-promos .landing-ad-body>div:last-child{min-width:0;overflow-wrap:anywhere}
+        .landing-page #landing-promos .landing-ad h3{margin:6px 0;font-size:16px}
+        .landing-page #landing-promos .landing-ad p{margin:0 0 8px;line-height:1.45}
+        @media(max-width:950px){.landing-page #landing-promos .landing-promo-row{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:700px){.landing-page #landing-promos .landing-promo-row,.landing-page #landing-promos .landing-ads-grid{grid-template-columns:minmax(0,1fr)}}
+        @media(max-width:380px){.landing-page #landing-promos .landing-ad-body{grid-template-columns:minmax(0,1fr)}}
+        </style>`;
+    }
     function landingImage(src, alt, cls, fallbackEmoji='🏍️', fallbackText='Image coming soon') {
         const safeSrc = esc(src || '');
         const safeAlt = esc(alt || '');
@@ -477,7 +592,7 @@
             const promos = getLandingPromos();
             const ads = Array.isArray(state.landing?.ads) ? state.landing.ads : [];
             const wideAd = ads.find(a => a.slot === 'wide') || ads[0] || null;
-            const cardAd = ads.find(a => a.slot === 'card') || ads[1] || null;
+            const cardAd = ads.find(a => a !== wideAd && a.slot === 'card') || ads.find(a => a !== wideAd) || null;
             const deposit = getDepositAmount();
             const bannerHidden = !!state.ui.landingBannerDismissed;
             const faq = [
@@ -490,6 +605,7 @@
             ];
             mount(`
       <div class="landing-page">
+        ${landingLayoutStyles()}
         ${bannerHidden ? '' : `<div class="landing-banner" role="status"><div class="landing-container landing-banner-inner"><span><strong>Prototype notice:</strong> Promo details are shown for the prototype. Final price follows the booking estimate.</span><button class="icon-btn" aria-label="Dismiss announcement" onclick="App.dismissLandingBanner()">×</button></div></div>`}
         <header class="landing-header">
           <div class="landing-container landing-header-inner">
@@ -513,9 +629,8 @@
               <h1>Ride the right motorcycle with a clear, approval-first rental flow.</h1>
               <p class="landing-lead">V.E.R.A. helps customers browse motorcycles, request bookings, and track rental steps while admins handle approval, payment verification, and operations.</p>
               <div class="landing-cta-row">
-                <a class="btn btn-primary" href="${browseHref}">Browse vehicles</a>
+                <button class="btn btn-primary" type="button" onclick="App.scrollLandingTo('landing-vehicles')">Browse vehicles</button>
                 <button class="btn" type="button" onclick="App.scrollLandingTo('landing-how')">How it works</button>
-                ${loggedIn ? `<a class="btn btn-ghost" href="${continueHref}">Continue to dashboard</a>` : ''}
               </div>
               <div class="landing-trust"><span>Admin approval before payment</span><span>GCash / Other proof upload</span><span>GPS consent for ongoing rentals</span></div>
             </div>
@@ -532,7 +647,7 @@
                 return `<article class="panel landing-card">
                   ${landingImage(v.imageUrl || v.imageUrlAlt || '', `${v.brand} ${v.name}`, 'landing-card-media', '🏍️', 'Vehicle image')}
                   <div class="panel-body">
-                    <div class="landing-card-top"><div><h3>${esc(v.brand)} ${esc(v.name)}</h3><p class="muted small">${esc(String(v.displacement||''))}cc · ${esc(v.transmission||'Manual')}</p></div><span class="status ${v.status === 'available' ? 'status-available' : v.status === 'rented' ? 'status-rented' : 'status-pending'}">${esc(avail.label)}</span></div>
+                    <div class="landing-card-top"><div><h3>${esc(v.brand)} ${esc(v.name)}</h3><p class="muted small">${esc(String(v.displacement||''))}cc · ${esc(v.transmission||'Manual')}</p></div><span class="status ${avail.tone === 'success' ? 'status-available' : avail.tone === 'danger' ? 'status-malfunction' : 'status-pending'}">${esc(avail.label)}</span></div>
                     <div class="landing-price">${fmtPHP(v.ratePerDay)} <span class="muted small">/ day</span></div>
                     <a class="btn btn-primary btn-block" href="${state.role==='customer'?`#/customer/vehicle/${esc(v.id)}`:`#/login`}">View details</a>
                   </div>
@@ -552,15 +667,16 @@
                 <div class="panel-body">
                   <span class="landing-badge">${esc(p.badge || 'Promo')}</span>
                   <h3>${esc(p.title)}</h3>
-                  <p class="muted small">${esc(p.description || '')}</p>
-                  <p class="small"><strong>Valid:</strong> ${esc(fmtDateShort(p.validFrom))} - ${esc(fmtDateShort(p.validUntil))}</p>
+                  <p class="muted small promo-description">${esc(p.description || '')}</p>
+                  <p class="small promo-validity"><strong>Valid:</strong> ${esc(fmtDateShort(p.validFrom))} – ${esc(fmtDateShort(p.validUntil))}</p>
                   <p class="faint small">Terms: ${esc(p.terms || 'Prototype display only.')}</p>
                 </div>
               </article>`).join('') || '<div class="empty">No active promos.</div>'}
             </div>
-            <div class="landing-ads-grid mt-4">
-              ${wideAd ? `<article class="panel landing-ad landing-ad-wide"><div class="panel-body landing-ad-body">${landingImage(wideAd.imageUrl, wideAd.title, 'landing-ad-media', '📣', 'Ad image')}<div><span class="landing-sponsored">${esc(wideAd.label||'Sponsored')}</span><h3>${esc(wideAd.title||'Partner')}</h3><p class="muted small">${esc(wideAd.description||'Demo partner placement.')}</p><span class="faint small">${esc(wideAd.cta||'Demo content')}</span></div></div></article>` : ''}
-              ${cardAd ? `<article class="panel landing-ad"><div class="panel-body landing-ad-body compact">${landingImage(cardAd.imageUrl, cardAd.title, 'landing-ad-media small', '🤝', 'Ad image')}<div><span class="landing-sponsored">${esc(cardAd.label||'Partner')}</span><h3>${esc(cardAd.title||'Partner')}</h3><p class="muted small">${esc(cardAd.description||'Demo partner placement.')}</p><span class="faint small">${esc(cardAd.cta||'Demo content')}</span></div></div></article>` : ''}
+            ${wideAd || cardAd ? '<h3 class="landing-ads-title">Partners &amp; sponsored offers</h3>' : ''}
+            <div class="landing-ads-grid">
+              ${wideAd ? `<article class="panel landing-ad"><div class="panel-body landing-ad-body">${landingImage(wideAd.imageUrl, wideAd.title, 'landing-ad-media', '📣', 'Ad image')}<div><span class="landing-sponsored">${esc(wideAd.label||'Sponsored')}</span><h3>${esc(wideAd.title||'Partner')}</h3><p class="muted small">${esc(wideAd.description||'Demo partner placement.')}</p><span class="faint small">${esc(wideAd.cta||'Demo content')}</span></div></div></article>` : ''}
+              ${cardAd ? `<article class="panel landing-ad"><div class="panel-body landing-ad-body">${landingImage(cardAd.imageUrl, cardAd.title, 'landing-ad-media', '🤝', 'Ad image')}<div><span class="landing-sponsored">${esc(cardAd.label||'Partner')}</span><h3>${esc(cardAd.title||'Partner')}</h3><p class="muted small">${esc(cardAd.description||'Demo partner placement.')}</p><span class="faint small">${esc(cardAd.cta||'Demo content')}</span></div></div></article>` : ''}
             </div>
           </div>
         </section>
@@ -614,7 +730,7 @@
           </div>
         </footer>
       </div>`);
-            if (window.matchMedia && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            if (window.matchMedia && typeof IntersectionObserver === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
                 document.querySelectorAll('.landing-card,.landing-promo-card,.landing-step,.landing-faq-item,.landing-ad').forEach(el => {
                     el.classList.add('landing-fade');
                     const obs = new IntersectionObserver((entries,o)=>{ entries.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); o.unobserve(e.target); } }); }, {threshold:.12});
@@ -623,7 +739,7 @@
             }
         } catch (err) {
             console.error('Landing render failed', err);
-            mount(`<div class="auth-wrap"><div class="auth-main"><div class="auth-box"><h1>V.E.R.A.</h1><p class="muted">The landing page encountered an issue.</p><div class="stack"><a class="btn btn-primary" href="#/customer/vehicles">Browse vehicles</a>${state.role ? `<a class="btn" href="${dashboardHash()}">Continue to dashboard</a>` : `<a class="btn" href="#/login">Login</a>`}</div></div></div></div>`);
+            mount(`<div class="auth-wrap"><div class="auth-main"><div class="auth-box"><h1>V.E.R.A.</h1><p class="muted">The landing page encountered an issue.</p><div class="stack">${state.role ? `<a class="btn btn-primary" href="${dashboardHash()}">Continue to dashboard</a>` : `<a class="btn btn-primary" href="#/login">Login</a>`}</div></div></div></div>`);
         }
     }
     // ---------- Customer: Vehicles ----------
@@ -676,10 +792,11 @@
 
     function vehicleAvailabilityLabel(v) {
         if (!v) return { label: 'Unknown', tone: 'muted', bookable: false };
-        if (v.status === 'available') return { label: 'Available', tone: 'success', bookable: true };
-        if (v.status === 'rented') return { label: 'Rented', tone: 'warning', bookable: true };
-        if (v.status === 'maintenance' || v.status === 'malfunction') return { label: 'Maintenance', tone: 'danger', bookable: false };
-        return { label: String(v.status || 'Unknown'), tone: 'muted', bookable: false };
+        const f = vehicleOperationalState(v);
+        const label = f.status.charAt(0).toUpperCase() + f.status.slice(1);
+        if (f.condition !== 'available') return {label: f.rented ? 'Rented · Maintenance' : 'Maintenance', tone:'warning', bookable:false};
+        if (f.service) return {label:f.rented ? 'Rented · Service' : 'Scheduled service',tone:'warning',bookable:true};
+        return {label,tone:f.available?'success':'warning',bookable:true};
     }
 
     function renderCustomerVehicles() {
@@ -694,7 +811,7 @@
         <div class="page-header">
           <div>
             <h1 class="page-title">Choose a motorcycle</h1>
-            <p class="page-desc">Step 1: Choose a motorcycle. Currently rented units can be reserved for future available dates.</p>
+            <p class="page-desc">Step 1: Choose a motorcycle. Rented motorcycles may be reserved for future dates, subject to availability.</p>
           </div>
         </div>
         <div class="toolbar" style="gap:10px;flex-wrap:wrap;">
@@ -731,7 +848,7 @@
         return reservationsForVehicle(vehicleId)
             .filter(r => (r.status === 'approved' || r.status === 'ongoing') && r.id !== excludeId)
             .concat((state.opsServices || []).filter(m => m.vehicleId === vehicleId && m.status === 'scheduled'))
-            .map(r => ({ from: new Date(r.start), to: new Date(r.end), start: r.start, end: r.end }));
+            .map(r => { const end = reservationOccupancyEnd(r); return { from: new Date(r.start), to: new Date(end), start: r.start, end, overdue: rentalIsOverdue(r) }; });
     }
     function rangeCrossesBlocked(start, end, blockedRanges) {
         const s = new Date(start), e = new Date(end);
@@ -740,9 +857,9 @@
     }
     function buildFlatpickrDisable(vehicleId, excludeId) {
         const blocked = getBlockedRanges(vehicleId, excludeId);
-        const disable = blocked.map(b => ({ from: b.from, to: b.to }));
+        const disable = blocked.map(b => ({ from: toManilaDateKey(b.start), to: toManilaDateKey(new Date(b.to.getTime() - 1).toISOString()) }));
         const v = getVehicle(vehicleId);
-        if (v && ['maintenance', 'malfunction'].includes(v.status)) disable.push(() => true);
+        if (v && vehicleOperationalState(v).condition !== 'available') disable.push(() => true);
         return { disable, blockedRanges: blocked };
     }
     function manilaDateTimeToISO(dateStr, timeStr) {
@@ -931,8 +1048,8 @@
         const v = getVehicle(id);
         if (!v)
             return mount(`<div class="empty"><div class="empty-title">Vehicle not found</div><div><a href="#/customer/vehicles">Return to vehicles</a></div></div>`);
-        const blockedVehicle = ['maintenance', 'malfunction'].includes(v.status);
-        const unavailable = !isVehicleBookable(v);
+        const condition = vehicleOperationalState(v).condition;
+        const blockedVehicle = condition !== 'available';
         const cust = currentCustomer();
         const hasLicense = bookingHasLicense(cust);
         const deposit = getDepositAmount();
@@ -942,7 +1059,7 @@
       <div style="margin-bottom:12px;"><a href="#/customer/vehicles" class="btn btn-ghost btn-sm" data-ai-target="browse-vehicles-link">&larr; Back to vehicles</a></div>
       <div class="page-header">
         <div><h1 class="page-title">${esc(v.name)}</h1><p class="page-desc">${esc(v.brand)} ${esc(v.model)} � ${v.year} � ${esc(v.color)}</p></div>
-        <div>${statusBadge(v.status)}</div>
+        <div>${vehicleOperationalBadges(v, false)}</div>
       </div>
       <div class="grid-3">
         <div class="stack">
@@ -957,14 +1074,14 @@
             </div>
           </div></div>
           <div class="panel"><div class="panel-header"><div class="panel-title">Booking rule: overlap prevention</div></div><div class="panel-body">
-            <p class="small muted mb-2">A request is blocked when its date range overlaps an approved or ongoing rental for the same vehicle, or the vehicle is under maintenance/malfunction.</p>
+            <p class="small muted mb-2">A request is blocked when its date range overlaps an approved or ongoing rental for the same vehicle, or the vehicle is under maintenance.</p>
             <div class="callout small"><span class="mono">newStart &lt; existingEnd &amp;&amp; newEnd &gt; existingStart</span></div>
-            <div class="small muted mt-2">${bookedRanges.length ? `<strong>Blocked periods:</strong> ${bookedRanges.map(r => `${fmtDateShort(r.start)}-${fmtDateShort(r.end)}`).join('; ')}` : 'No approved/ongoing bookings blocking this vehicle right now.'}</div>
+            <div class="small muted mt-2">${bookedRanges.length ? `<strong>Blocked periods:</strong> ${bookedRanges.map(r => `${fmtDateShort(r.start)} – ${fmtDateShort(new Date(Date.parse(r.end)-1).toISOString())}`).join('; ')}` : 'No approved/ongoing bookings blocking this vehicle right now.'}</div>
           </div></div>
         </div>
         <div style="grid-column: span 2;">
           <div class="panel"><div class="panel-header"><div class="panel-title">Book this vehicle</div></div><div class="panel-body">
-            ${blockedVehicle ? `<div class="callout danger">This vehicle is currently <strong>${esc(v.status)}</strong> and cannot accept reservation requests.</div>` : unavailable ? `<div class="callout warning">This vehicle is currently <strong>${esc(v.status)}</strong>. Please choose another available vehicle.</div>` : `
+            ${blockedVehicle ? `<div class="callout danger">This vehicle is currently marked <strong>Maintenance</strong> and cannot accept reservation requests.</div>` : `
             ${v.status === 'rented' ? `<div class="callout warning mb-2">This motorcycle is currently rented. You can request a future rental for dates outside existing bookings.</div>` : ''}
             <form id="reqForm" data-ai-target="booking-form" onsubmit="App.submitReservation(event,'${v.id}')" class="stack booking-flow">
               <div class="booking-step"><div class="step-head"><span class="step-num">1</span><div><div class="step-title">Choose model</div><div class="small muted">Selected: ${esc(v.brand)} ${esc(v.name)} (${esc(v.displacement)}cc)</div></div></div></div>
@@ -1007,7 +1124,7 @@
         </div>
       </div>
     `);
-        if (!blockedVehicle && !unavailable) initBookingForm(v, { prefill });
+        if (!blockedVehicle) initBookingForm(v, { prefill });
     }
 
     // ---------- Customer: Reservations ----------
@@ -1230,6 +1347,7 @@
                     ${reservationPaymentPanel(r, p, admin)}
                     ${overtimePanel(r, admin)}
                     ${refundPanel(r, admin)}
+                    ${finDepositPanel(r, admin)}
                     ${reservationPanel('Reservation status', timelineHTML(r.status))}
                     ${admin ? reservationAdminActions(r) : cancel}
                 </div>
@@ -1271,15 +1389,86 @@
       </div>
     `);
     }
-    function renderCustomerNotifications() {
-        const list = state.notifications.filter(n => n.role === 'customer' && (!n.customerId || n.customerId === currentCustomer()?.id)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Notifications</h1><p class="page-desc">Updates about your reservations and payments.</p></div><div><button class="btn" onclick="App.markAllRead()">Mark all as read</button></div></div>
-      ${list.length ? `<div class="panel"><div class="panel-body flush"><table class="table"><thead><tr><th>Status</th><th>Notification</th><th>Date</th><th></th></tr></thead><tbody>${list.map(n => `
-        <tr><td>${n.isRead ? '<span class="small muted">Read</span>' : '<span class="status status-pending">Unread</span>'}</td><td><div class="cell-main">${esc(n.title)}</div><div class="cell-sub">${esc(n.body)}</div></td><td class="small muted nowrap">${fmtDate(n.createdAt, { time: true })}</td><td class="text-right"><a class="btn btn-sm" href="${esc(n.link)}" onclick="App.markNotifRead('${n.id}')">Open</a></td></tr>`).join('')}</tbody></table></div></div>`
-            : `<div class="empty"><div class="empty-title">No notifications</div><div>You're up to date.</div></div>`}
-    `);
+    // Shared notification center. Scope each inbox and its mutations to the current role/account.
+    function notificationOwned(n) {
+        if (!n || n.role !== state.role || !['admin','customer'].includes(state.role)) return false;
+        if (state.role === 'admin') return true;
+        const c = currentCustomer();
+        if (!c) return false;
+        if (n.customerId) return n.customerId === c.id;
+        // Legacy personal notices with a reservation link can be safely attributed.
+        const match = String(n.link || '').match(/^#\/customer\/reservation\/([^/]+)(?:\/|$)/);
+        return !!(match && getReservation(match[1]) && ownsReservation(getReservation(match[1])));
     }
+    function notificationInbox(includeArchived = false) {
+        return (state.notifications || []).filter(n => notificationOwned(n) && (includeArchived || !n.archivedAt)).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt));
+    }
+    function notificationSettings() {
+        const key = state.role === 'admin' ? 'admin' : 'customer:'+ (currentCustomer()?.id || 'none');
+        state.ui.notificationCenter ||= {};
+        return state.ui.notificationCenter[key] ||= {view:'all',category:'all',query:''};
+    }
+    const notificationCategories = {all:'All categories',reservations:'Reservations',payments:'Payments & refunds',customers:'Customers & identity',fleet:'Fleet & tracking',other:'Other'};
+    function notificationCategory(n) {
+        const title = String(n.title || '').toLowerCase(), link = String(n.link || '');
+        if (/payment|overtime|refund|deposit|receipt|charge/.test(title) || /\/payments(?:\/|$)/.test(link)) return 'payments';
+        if (/identification|identity|license|licence|profile|verification|account/.test(title) || /^#\/admin\/customers?(?:\/|$)/.test(link)) return 'customers';
+        if (/overdue|maintenance|malfunction|tracking|gps|signal|service|log entry/.test(title) || /\/(map|maintenance|vehicles|schedule)(?:\/|$)/.test(link)) return 'fleet';
+        if (/reservation|rental|booking|return|pickup/.test(title) || /\/reservation[s]?(?:\/|$)/.test(link)) return 'reservations';
+        return 'other';
+    }
+    function notificationUrgent(n) {
+        return state.role === 'admin' && /overdue|no signal|missing signal|malfunction|urgent/i.test(n.title || '');
+    }
+    function notificationDestination(n) {
+        const link = String(n.link || '');
+        if (!link.startsWith('#/'+state.role+'/') || /[\s<>"']/.test(link)) return '';
+        if (state.role === 'customer') {
+            const m = link.match(/^#\/customer\/reservation\/([^/]+)(?:\/|$)/);
+            if (m && (!getReservation(m[1]) || !ownsReservation(getReservation(m[1])))) return '';
+        }
+        return link;
+    }
+    function notificationAction(n) {
+        const link = notificationDestination(n);
+        if (!link) return '';
+        if (/\/reservation\//.test(link)) return /\/pay$/.test(link) ? 'Upload payment' : 'View reservation';
+        if (/\/payments/.test(link)) return 'Review payments';
+        if (/\/customer\//.test(link) && state.role==='admin') return 'Review customer';
+        if (/\/map$/.test(link)) return 'Open Live Map';
+        if (/\/maintenance/.test(link)) return 'View maintenance';
+        return 'Open details';
+    }
+    function renderCustomerNotifications() { renderNotificationCenter(); }
+    function renderNotificationCenter() {
+        if (!['admin','customer'].includes(state.role)) return;
+        const inbox = notificationInbox(true), f = notificationSettings();
+        const active = inbox.filter(n=>!n.archivedAt), unread = active.filter(n=>!n.isRead).length;
+        const counts = {all:active.length,unread,archived:inbox.length-active.length};
+        const query = f.query.trim().toLowerCase();
+        const list = inbox.filter(n=> (f.view==='archived' ? !!n.archivedAt : !n.archivedAt && (f.view!=='unread'||!n.isRead)) && (f.category==='all'||notificationCategory(n)===f.category) && (!query||[n.title,n.body,n.link,notificationCategories[notificationCategory(n)]].join(' ').toLowerCase().includes(query)));
+        const yesterday = toManilaDateKey(new Date(Date.now()-86400000).toISOString());
+        let previous = null;
+        const icons = {reservations:'▣',payments:'₱',customers:'✓',fleet:'!',other:'•'};
+        const cards = list.map(n=>{
+            const day = Number.isFinite(Date.parse(n.createdAt)) ? toManilaDateKey(n.createdAt) : 'unknown';
+            const heading = day!==previous ? `<h2 class="nc-date">${esc(day===todayKey()?'Today':day===yesterday?'Yesterday':day==='unknown'?'Unknown date':fmtDateShort(n.createdAt))}</h2>` : '';
+            previous=day;
+            const category=notificationCategory(n),urgent=notificationUrgent(n),action=notificationAction(n);
+            return heading+`<article class="nc-card ${!n.isRead&&!n.archivedAt?'nc-unread':''}"><div class="nc-icon ${urgent?'nc-urgent':''}" aria-hidden="true">${icons[category]}</div><div class="nc-content"><div class="nc-meta"><span>${esc(notificationCategories[category])}</span>${urgent?'<span class="nc-priority">Urgent</span>':''}${!n.isRead&&!n.archivedAt?'<span class="nc-dot" aria-label="Unread"></span>':''}</div><h3>${esc(n.title||'Notification')}</h3><p>${esc(n.body||'')}</p><div class="small muted">${Number.isFinite(Date.parse(n.createdAt))?esc(fmtDate(n.createdAt,{time:true})):'—'}</div></div><div class="nc-actions">${action?`<button class="btn btn-primary btn-sm" data-id="${esc(n.id)}" onclick="App.ncOpen(this.dataset.id)">${esc(action)}</button>`:''}${n.archivedAt?`<button class="btn btn-sm" data-id="${esc(n.id)}" onclick="App.ncArchive(this.dataset.id,false)">Restore</button>`:`<button class="btn btn-sm" data-id="${esc(n.id)}" onclick="App.ncRead(this.dataset.id,${!n.isRead})">Mark ${n.isRead?'unread':'read'}</button><button class="btn btn-ghost btn-sm" data-id="${esc(n.id)}" onclick="App.ncArchive(this.dataset.id,true)">Archive</button>`}</div></article>`;
+        }).join('');
+        mount(`<style>
+        .nc-center{max-width:1100px;margin:0 auto}.nc-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.nc-center .nc-tabs button{min-height:32px}.nc-search{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}.nc-search .input{flex:1 1 220px;width:auto;min-width:0}.nc-search .select{width:auto;max-width:100%}.nc-date{font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;margin:20px 0 8px}.nc-card{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:start;gap:14px;padding:16px;margin-bottom:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}.nc-card.nc-unread{border-left:3px solid var(--accent);background:linear-gradient(90deg,var(--accent-soft),var(--surface) 38%)}.nc-icon{width:40px;height:40px;border-radius:8px;display:grid;place-items:center;background:var(--surface-alt);color:var(--accent);font-size:20px;font-weight:600}.nc-icon.nc-urgent{color:var(--danger);background:var(--danger-soft)}.nc-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:var(--text-muted);font-size:11px;margin-bottom:3px}.nc-priority{color:var(--danger);font-weight:600}.nc-dot{width:7px;height:7px;background:var(--accent);border-radius:50%;display:inline-block}.nc-content h3{font-size:14px;margin-bottom:4px;overflow-wrap:anywhere}.nc-content p{font-size:13px;color:var(--text-muted);margin-bottom:7px;overflow-wrap:anywhere}.nc-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;align-items:center;max-width:270px}.nc-actions .btn{min-height:30px}.nc-summary{margin-bottom:14px;color:var(--text-muted);font-size:13px}@media(max-width:800px){.nc-card{grid-template-columns:36px minmax(0,1fr);gap:10px}.nc-icon{width:36px;height:36px}.nc-actions{grid-column:2;justify-content:flex-start;max-width:none}}@media(max-width:420px){.nc-card{padding:11px}.nc-search .select{flex:1 1 150px}}
+        </style><section class="nc-center"><div class="page-header"><div><h1 class="page-title">Notifications</h1><p class="page-desc">${state.role==='admin'?'Stay updated on rental operations.':'Updates about your account, bookings and payments.'}</p></div><button class="btn" onclick="App.markAllRead()" ${unread?'':'disabled'}>Mark all as read</button></div><div class="nc-summary">${unread} unread · ${active.length} in inbox · ${counts.archived} archived</div><div class="nc-tabs" aria-label="Notification views">${[['all','All'],['unread','Unread'],['archived','Archived']].map(([k,label])=>`<button class="chip ${f.view===k?'active':''}" aria-pressed="${f.view===k}" onclick="App.ncView('${k}')">${label} (${counts[k]})</button>`).join('')}</div><form class="nc-search" onsubmit="App.ncSearch(event)"><input class="input" name="query" aria-label="Search notifications" placeholder="Search notifications..." value="${esc(f.query)}"><select name="category" class="select" aria-label="Notification category" onchange="App.ncSearch({preventDefault(){},target:this.form})">${Object.entries(notificationCategories).map(([k,label])=>`<option value="${k}" ${f.category===k?'selected':''}>${esc(label)}</option>`).join('')}</select><button class="btn btn-primary">Search</button><button type="button" class="btn btn-ghost" onclick="App.ncReset()">Clear filters</button></form><div aria-live="polite" class="small muted">${list.length} matching notification${list.length===1?'':'s'}</div>${cards||'<div class="empty"><div class="empty-title">No matching notifications</div><div>Try another filter or search.</div></div>'}</section>`);
+    }
+    function ncRefresh(){ if (!['admin','customer'].includes(state.role)) return; renderChrome(); if (parseHash()[1]==='notifications') renderNotificationCenter(); }
+    function ncView(view){if(!['admin','customer'].includes(state.role)||!['all','unread','archived'].includes(view))return;notificationSettings().view=view;ncRefresh();}
+    function ncSearch(e){e.preventDefault();if(!['admin','customer'].includes(state.role))return;const f=notificationSettings(),fields=e.target.elements;f.query=String(fields.query.value||'').slice(0,200);f.category=Object.hasOwn(notificationCategories,fields.category.value)?fields.category.value:'all';ncRefresh();}
+    function ncReset(){if(!['admin','customer'].includes(state.role))return;Object.assign(notificationSettings(),{category:'all',query:''});ncRefresh();}
+    function ncRead(id,read){const n=notificationInbox(true).find(n=>n.id===id);if(!n||n.archivedAt)return;n.isRead=!!read;ncRefresh();}
+    function ncArchive(id,archive){const n=notificationInbox(true).find(n=>n.id===id);if(!n)return;if(archive){n.archivedAt=new Date().toISOString();n.isRead=true;}else delete n.archivedAt;ncRefresh();}
+    function ncOpen(id){const n=notificationInbox(true).find(n=>n.id===id);if(!n)return;const link=notificationDestination(n);if(!link){n.isRead=true;ncViewAll();return;}n.isRead=true;state.ui.notifOpen=false;if(location.hash===link)render();else {renderChrome();navigate(link);}}
+    function ncViewAll(){state.ui.notifOpen=false;if(!['admin','customer'].includes(state.role))return;Object.assign(notificationSettings(),{view:'all',category:'all',query:''});const link='#/'+state.role+'/notifications';if(location.hash===link)ncRefresh();else {renderChrome();navigate(link);}}
     function renderCustomerAccount() {
         const cust = currentCustomer();
         if (!cust) return;
@@ -1339,42 +1528,95 @@
     }
 
     // ---------- Admin: Dashboard ----------
+    // Dashboard occupancy and operational events are derived from records, not cached labels.
+    function dashboardFleet(now = Date.now()) {
+        return state.vehicles.map(v => vehicleOperationalState(v, now));
+    }
+
+    function dashboardEvents() {
+        const events = [];
+        for (const r of state.reservations) {
+            if (!['approved','ongoing','completed'].includes(r.status)) continue;
+            const method = getDeliveryMethod(r).split(' & ');
+            if (Number.isFinite(Date.parse(r.start))) events.push({ r, date:r.start, kind:'pickup', method:method[0], done:r.status !== 'approved' });
+            const returned = r.status === 'completed' && r.actualReturn;
+            if (Number.isFinite(Date.parse(returned || r.end))) events.push({ r, date:returned || r.end, kind:'return', method:method[1] || 'Not specified', done:r.status === 'completed' });
+        }
+        return events.sort((a,b)=>Date.parse(a.date)-Date.parse(b.date));
+    }
+    function dashboardLink(target) {
+        if (!adminOnly()) return;
+        const links = {pending:'reservations',ongoing:'reservations',available:'vehicles/available',pickups:'schedule',returns:'map',upcoming:'schedule',overdue:'map',signal:'map',payments:'payments/pending',maintenance:'maintenance',verification:'customers',fleet:'vehicles',activity:'activity',reports:'reports',settings:'settings'};
+        if (!links[target]) return;
+        if (['pending','ongoing'].includes(target)) state.ui.adminResTab=target;
+        if (['pickups','upcoming'].includes(target)) Object.assign(state.ui,{opsScheduleStart:todayKey(),fleetDays:7,fleetVehicle:'all',fleetKind:'rental'});
+        if (['overdue','signal','returns'].includes(target)) {
+            state.ui.tracking=state.ui.tracking||{};
+            state.ui.tracking.filter=target==='returns'?'returns':target==='overdue'?'overdue':'all';
+            state.ui.tracking.selectedVehicleId=null;
+            if (target==='returns') {
+                const rows=state.reservations.filter(r=>r.status==='ongoing' && Number.isFinite(Date.parse(r.end)) && toManilaDateKey(r.end)===todayKey());
+                state.ui.tracking.panelCollapsed=false;
+                if (rows.length===1) state.ui.tracking.selectedVehicleId=rows[0].vehicleId;
+            }
+        }
+        if (target==='payments') Object.assign(state.ui,{finTab:'queue',finQuery:'',finStatus:'all',finMethod:'all'});
+        if (target==='maintenance') state.ui.maintenanceTileFilter='attention';
+        if (target==='verification') Object.assign(state.ui,{cmFilter:'pending',cmQuery:'',cmPage:1});
+        navigate('#/admin/'+links[target]);
+    }
+    function dashboardTime(iso) { return new Date(iso).toLocaleTimeString('en-PH',{timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit',hour12:true}); }
+    function dashboardEventHTML(e, today=false) {
+        const r=e.r,v=getVehicle(r.vehicleId),c=getCustomer(r.customerId);
+        const late=!e.done && Date.parse(e.date)<Date.now();
+        const status=e.done?(e.kind==='pickup'?'Released':'Returned'):late?(e.kind==='pickup'?'Pickup due':'Overdue'):'Upcoming';
+        return `<a class="dash-event" href="#/admin/reservation/${esc(r.id)}"><div class="dash-event-time">${today?'':`<span>${esc(fmtDateShort(e.date))}</span>`}<strong>${esc(dashboardTime(e.date))}</strong><span>${e.kind==='pickup'?'Pickup':'Return'}</span></div><div class="dash-bike">${v?vehicleImage(v):'—'}</div><div class="dash-event-main"><strong>${esc(v?.name||r.vehicleId)}</strong><span class="small muted">${esc(v?.plateNumber||'')}</span><div class="dash-person">${c?customerAvatar(c):''}<span>${esc(c?.name||r.customerName)}</span></div><span class="small muted">${esc(e.method)}</span></div><span class="status status-${e.done?'completed':late?'open':'approved'}">${status}</span></a>`;
+    }
+    function dashboardStyles() {return `<style>
+    .vera-dash{display:grid;gap:16px;container-type:inline-size}.vera-dash .page-header{margin:0}.dash-date{text-align:right}.dash-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.dash-metric{background:var(--surface,#161b22);border:1px solid var(--border,#30363d);border-radius:8px;display:grid;text-align:left;gap:7px;padding:15px;cursor:pointer;color:var(--text);min-width:0}.dash-metric:hover,.dash-alert:hover,.dash-event:hover{background:var(--surface-alt,#21262d);text-decoration:none}.dash-metric:focus-visible,.dash-alert:focus-visible,.dash-event:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.dash-metric-top{display:flex;justify-content:space-between;align-items:center;gap:8px}.dash-number{font-size:28px;line-height:1.1;font-weight:650;letter-spacing:-.03em}.dash-icon{font-size:19px}.dash-section-title{font-size:15px;font-weight:600}.dash-alert{display:flex;align-items:center;gap:12px;width:100%;background:transparent;border:0;border-bottom:1px solid var(--border);text-align:left;padding:12px 14px;color:var(--text);cursor:pointer}.dash-alert:last-child{border-bottom:0}.dash-alert-icon{border-radius:7px;background:var(--surface-alt);display:grid;place-items:center;width:36px;height:36px;flex:0 0 36px;font-size:18px}.dash-alert-copy{flex:1;min-width:0}.dash-alert-copy strong,.dash-alert-copy span{display:block}.dash-schedule{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dash-schedule-col{min-width:0;border:1px solid var(--border);border-radius:6px;overflow:hidden}.dash-schedule-col h3{font-size:13px;padding:12px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between}.dash-event{display:grid;grid-template-columns:76px 72px minmax(0,1fr) auto;gap:10px;align-items:center;color:var(--text);padding:12px;border-bottom:1px solid var(--border);min-width:0}.dash-event:last-child{border-bottom:0}.dash-event-time,.dash-event-main{display:grid;gap:3px;min-width:0;overflow-wrap:anywhere}.dash-event-time span{font-size:11px;color:var(--text-muted)}.dash-event-time strong{font-size:13px}.dash-bike{height:54px;background:#fff;border-radius:5px;overflow:hidden;display:grid;place-items:center}.dash-bike img{width:100%;height:100%;object-fit:contain}.dash-person{display:flex;align-items:center;gap:6px;font-size:12px}.dash-person>div{width:24px!important;height:24px!important;flex:0 0 24px!important;font-size:10px}.dash-overview{display:grid;grid-template-columns:1fr 1fr;gap:12px}.dash-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dash-stat{padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;min-width:0}.dash-stat strong{display:block;font-size:22px;margin-top:4px}.dash-activity{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);color:var(--text);overflow-wrap:anywhere}.dash-activity:last-child{border-bottom:0}.dash-activity div{min-width:0;flex:1}.dash-activity time{font-size:11px;color:var(--text-muted);text-align:right}.dash-empty{padding:22px 12px;text-align:center;color:var(--text-muted);font-size:13px}.dash-list{max-height:390px;overflow:auto}.dash-head-link{color:var(--accent);font-size:12px}.dash-sub{font-size:12px;color:var(--text-muted)}
+    @container (max-width:1000px){.dash-schedule .dash-event{grid-template-columns:64px 56px minmax(0,1fr)}.dash-schedule .dash-event>.status{grid-column:3;justify-self:start}}
+    @container (max-width:730px){.dash-schedule,.dash-overview{grid-template-columns:1fr}.dash-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dash-date{text-align:left}.dash-event{grid-template-columns:70px 60px minmax(0,1fr)}.dash-event>.status{grid-column:3;justify-self:start}}
+    @container (max-width:400px){.dash-stats{grid-template-columns:1fr}.dash-metric{padding:12px}.dash-event,.dash-schedule .dash-event{grid-template-columns:58px 48px minmax(0,1fr);gap:7px}.dash-activity{flex-wrap:wrap}}
+    </style>`;}
     function renderAdminDashboard() {
-        const pending = state.reservations.filter(r => r.status === 'pending').length;
-        const active = state.reservations.filter(r => r.status === 'ongoing').length;
-        const available = state.vehicles.filter(v => v.status === 'available').length;
-        const month = new Date().getMonth(), year = new Date().getFullYear();
-        const earnings = state.reservations.filter(r => r.status === 'completed').filter(r => {
-            const d = new Date(r.actualReturn || r.end);
-            return d.getMonth() === month && d.getFullYear() === year;
-        }).reduce((s, r) => s + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r), 0);
-        const todayStr = todayKey();
-        const todays = state.reservations.filter(r => (r.status === 'approved' || r.status === 'ongoing') && toManilaDateKey(r.start) <= todayStr && toManilaDateKey(r.end) >= todayStr);
-        const perVehicle = state.vehicles.map(v => ({ v, val: state.reservations.filter(r => r.vehicleId === v.id && r.status === 'completed').reduce((s, r) => s + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r), 0) })).filter(x => x.val > 0).sort((a, b) => b.val - a.val).slice(0, 6);
-        const max = Math.max(1, ...perVehicle.map(x => x.val));
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Dashboard</h1><p class="page-desc">Operational overview for reservations, fleet status, and earnings.</p></div></div>
-      <div class="metrics mb-3">
-        <div class="metric"><div class="metric-label">Pending requests</div><div class="metric-value">${pending}</div></div>
-        <div class="metric"><div class="metric-label">Active rentals</div><div class="metric-value">${active}</div></div>
-        <div class="metric"><div class="metric-label">Available vehicles</div><div class="metric-value">${available}</div></div>
-        <div class="metric"><div class="metric-label">Earnings (this month)</div><div class="metric-value sm">${fmtPHP(earnings)}</div></div>
-      </div>
-      <div class="grid-3">
-        <div style="grid-column: span 2;" class="stack">
-          ${renderOvertimeRulesPanel()}
-          <div class="panel"><div class="panel-header"><div class="panel-title">Today's schedule</div><a href="#/admin/reservations" class="btn btn-sm btn-ghost">View reservations</a></div>
-            <div class="panel-body flush">${todays.length ? `<table class="table"><thead><tr><th>Customer</th><th>Vehicle</th><th>Period</th><th>Status</th></tr></thead><tbody>${todays.map(r => {
-            const v = getVehicle(r.vehicleId);
-            return `<tr class="row-click" onclick="location.hash='#/admin/reservation/${r.id}'"><td class="cell-main">${esc(r.customerName)}</td><td>${esc(v ? v.name : '')}</td><td class="small">${fmtDateShort(r.start)} – ${fmtDateShort(r.end)}</td><td>${statusBadge(r.status)}</td></tr>`;
-        }).join('')}</tbody></table>` : `<div class="empty">No rentals scheduled for today.</div>`}</div>
-          </div>
-          <div class="panel"><div class="panel-header"><div class="panel-title">Earnings by vehicle</div><span class="small muted">Completed rentals</span></div><div class="panel-body">
-            ${perVehicle.length ? perVehicle.map(x => `<div class="bar-row"><div class="bar-label"><span>${esc(x.v.name)}</span><span>${fmtPHP(x.val)}</span></div><div class="bar-track"><div class="bar-fill" style="width:${(x.val / max * 100).toFixed(1)}%"></div></div></div>`).join('') : `<div class="small muted">No completed rental earnings recorded yet.</div>`}
-          </div></div>
-        </div>
-      </div>
-    `);
+        const now=Date.now(), today=todayKey();
+        const dayStart=Date.parse(today+'T00:00:00+08:00');
+        const fleet=dashboardFleet(now), active=state.reservations.filter(r=>r.status==='ongoing');
+        const pending=state.reservations.filter(r=>r.status==='pending').length;
+        const overdue=active.filter(r=>Date.parse(r.end)<now).length;
+        const available=fleet.filter(x=>x.available).length;
+        const events=dashboardEvents();
+        const todays=events.filter(e=>toManilaDateKey(e.date)===today);
+        const pickups=todays.filter(e=>e.kind==='pickup'),returns=todays.filter(e=>e.kind==='return');
+        const upcoming=events.filter(e=>!e.done&&Date.parse(e.date)>=dayStart+86400000&&Date.parse(e.date)<dayStart+8*86400000);
+        const payments=state.payments.filter(p=>p.status==='pending').length;
+        const verification=state.customers.filter(c=>identityStatus(c)==='pending').length;
+        const faults=fleet.filter(x=>x.malfunction).length;
+        const maintenance=fleet.filter(x=>x.malfunction||x.maintenance).length;
+        const due=state.vehicles.filter(v=>['Due','Due soon'].includes(maintenanceDue(v))).length;
+        const tracking=typeof App.Tracking?.getTrackedVehicles==='function'?App.Tracking.getTrackedVehicles('all'):null;
+        const noSignal=tracking?tracking.filter(x=>x.noSignal).length:null;
+        const connected=tracking?tracking.filter(x=>!x.noSignal).length:null;
+        const pickupDue=pickups.filter(e=>!e.done).length;
+        const returnsDue=returns.filter(e=>e.r.status==='ongoing').length;
+        const recent=(state.activityLogs||[]).slice().sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)).slice(0,6);
+        const metrics=[['Pending requests',pending,'▤','var(--warning)','pending','Awaiting approval'],['Active rentals',active.length,'◉','var(--accent)','ongoing','Currently ongoing'],['Available vehicles',available,'✓','var(--success)','available','Free for immediate release'],['Pickups today',pickups.length,'↗','var(--accent)','pickups',`${pickupDue} awaiting release`],['Returns today',returnsDue,'↙','var(--success)','returns',`${returnsDue} awaiting return · View map`],['Overdue rentals',overdue,'!','var(--danger)','overdue','Past expected return']];
+        const alerts=[['Overdue rentals',overdue,'!','var(--danger)','overdue','Past scheduled return time'],['GPS signal missing',noSignal,'⌖','var(--danger)','signal','No recent location update'],['Motorcycle malfunctions',faults,'!','var(--danger)','maintenance','Review open issues'],['Pickups awaiting release today',pickupDue,'↗','var(--warning)','pickups','Review today’s handovers'],['Payments awaiting verification',payments,'▤','var(--warning)','payments','Review submitted proof'],['Pending reservation requests',pending,'▤','var(--warning)','pending','Review booking requests'],['Preventive service due or due soon',due,'⚙','var(--warning)','maintenance','Review service dates and odometers'],['Customers awaiting verification',verification,'✓','var(--accent)','verification','Review submitted identification']].filter(a=>a[1]>0);
+        const link=(target,label)=>`<button type="button" class="link-btn dash-head-link" onclick="App.dashboardLink('${target}')">${label}</button>`;
+        const panel=(title,target,label,body)=>`<section class="panel"><div class="panel-header"><h2 class="dash-section-title">${title}</h2>${link(target,label)}</div>${body}</section>`;
+        const stat=(label,value,color)=>`<div class="dash-stat"><span class="small muted">${label}</span><strong style="color:${color}">${value}</strong></div>`;
+        const col=(label,items)=>`<div class="dash-schedule-col"><h3>${label}<span class="muted">${items.length}</span></h3><div class="dash-list">${items.length?items.map(e=>dashboardEventHTML(e,true)).join(''):`<div class="dash-empty">No ${label.toLowerCase()} scheduled today.</div>`}</div></div>`;
+        mount(`${dashboardStyles()}<div class="vera-dash"><div class="page-header"><div><h1 class="page-title">Dashboard</h1><p class="page-desc">Fleet and rental operations overview</p></div><div class="dash-date"><strong>${esc(new Date(now).toLocaleDateString('en-PH',{timeZone:'Asia/Manila',weekday:'long',month:'long',day:'numeric',year:'numeric'}))}</strong><div class="small muted">${esc(dashboardTime(now))} PHT · Snapshot</div></div></div>
+        <div class="dash-metrics">${metrics.map(([label,count,icon,color,target,hint])=>`<button type="button" class="dash-metric" onclick="App.dashboardLink('${target}')"><div class="dash-metric-top"><span class="metric-label">${label}</span><span aria-hidden="true" class="dash-icon" style="color:${color}">${icon}</span></div><span class="dash-number" style="color:${color}">${count}</span><span class="dash-sub">${hint}</span></button>`).join('')}</div>
+        ${panel('Requires attention','activity','Activity log',alerts.length?`<div>${alerts.map(([label,count,icon,color,target,hint])=>`<button class="dash-alert" type="button" onclick="App.dashboardLink('${target}')"><span class="dash-alert-icon" aria-hidden="true" style="color:${color}">${icon}</span><span class="dash-alert-copy"><strong>${count} · ${label}</strong><span class="small muted">${hint}</span></span><span aria-hidden="true">›</span></button>`).join('')}</div>`:'<div class="dash-empty">No operational alerts requiring attention.</div>')}
+        ${panel("Today's schedule",'pickups','Fleet schedule',`<div class="panel-body dash-schedule">${col('Pickups',pickups)}${col('Returns',returns)}</div>`)}
+        ${panel('Upcoming schedule · next 7 days','upcoming','Fleet schedule',`<div class="dash-list">${upcoming.length?upcoming.map(e=>dashboardEventHTML(e)).join(''):'<div class="dash-empty">No confirmed upcoming pickups or returns.</div>'}</div>`)}
+        <div class="dash-overview">${panel('Fleet overview','fleet','View vehicles',`<div class="panel-body"><div class="dash-stats">${stat('Available',available,'var(--success)')}${stat('Rented',fleet.filter(x=>x.rented).length,'var(--accent)')}${stat('Mechanical holds',maintenance,'var(--warning)')}</div><p class="small muted mt-2">Mechanical holds can overlap with rental occupancy. ${fleet.filter(x=>x.reserved&&!x.rented).length} reserved for a current approved booking.</p></div>`)}${panel('GPS overview','signal','Live map',`<div class="panel-body"><div class="dash-stats">${stat('Recent signal',connected??'—','var(--success)')}${stat('No signal',noSignal??'—','var(--danger)')}${stat('Overdue',overdue,'var(--warning)')}</div><p class="small muted mt-2">${tracking?'Tracking data may be simulated. Signal and overdue indicators can overlap.':'Tracking module unavailable.'}</p></div>`)}</div>
+        ${panel('Recent activity','activity','View activity log',`<div>${recent.length?recent.map(a=>`<div class="dash-activity"><div><strong>${esc(a.action||'Activity')} · ${esc(a.module||'System')}</strong><div class="small muted">${esc(a.description||'')} · ${esc(a.actorName||'')}</div></div><time>${esc(fmtDate(a.createdAt,{time:true}))}</time><button class="btn btn-sm" onclick="App.viewActivity('${esc(a.id)}')">Details</button></div>`).join(''):'<div class="dash-empty">No activity recorded yet.</div>'}</div>`)}
+        </div>`);
+    }
+    function renderAdminSettings() {
+        mount(`<div class="page-header"><div><h1 class="page-title">Settings</h1><p class="page-desc">Current rental contract configuration.</p></div></div><div class="stack">${renderOvertimeRulesPanel()}<div class="panel"><div class="panel-header"><div class="panel-title">Security deposit</div></div><div class="panel-body"><strong>${fmtPHP(getDepositAmount())}</strong><p class="small muted">Refundable security deposit · read-only prototype configuration.</p></div></div></div>`);
     }
 
     function vehicleImage(vehicle) {
@@ -1399,13 +1641,9 @@
 }
     // ---------- Admin: Vehicles ----------
     
-function renderAdminVehicles() {
-    const statuses = [
-        'available',
-        'rented',
-        'maintenance',
-        'malfunction'
-    ];
+function renderAdminVehicles(filter) {
+    const visibleFleet = filter === 'available' ? dashboardFleet().filter(x=>x.available).map(x=>x.v) : state.vehicles;
+    const statuses = ['available', 'maintenance', 'malfunction'];
 
     mount(`
         <div class="page-header">
@@ -1424,16 +1662,22 @@ function renderAdminVehicles() {
             </button>
         </div>
 
+        ${filter==='available'?`<div class="toolbar"><span class="muted">${visibleFleet.length} vehicle(s) available for immediate release</span><a href="#/admin/vehicles" class="btn btn-sm">Show all vehicles</a></div>${visibleFleet.length?'':'<div class="empty">No vehicles available for immediate release.</div>'}`:''}
         <div class="vehicle-grid">
 
-            ${state.vehicles.map(vehicle => `
+            ${visibleFleet.map(vehicle => {
+                const f = vehicleOperationalState(vehicle);
+                const selectedCondition = f.condition !== 'available' ? f.condition : f.service ? 'maintenance' : 'available';
+                const recordCondition = vehicleRecordCondition(vehicle);
+                const minimumCondition = recordCondition === 'malfunction' ? 'malfunction' : recordCondition === 'maintenance' || f.service ? 'maintenance' : 'available';
+                return `
                 <article class="fleet-card">
 
                     <div class="fleet-image">
                         ${vehicleImage(vehicle)}
 
                         <div class="fleet-status">
-                            ${statusBadge(vehicle.status)}
+                            ${vehicleOperationalBadges(vehicle)}
                         </div>
                     </div>
 
@@ -1486,11 +1730,12 @@ function renderAdminVehicles() {
                         </p>
                         <p class="muted small" style="margin-top:6px">Tracker: ${esc(vehicle.tracker?.deviceId || 'Not set')} • ${vehicle.tracker?.enabled === false ? 'Disabled' : 'Enabled'}${vehicle.tracker?.lastSeenAt ? ` • Last seen ${fmtDateShort(vehicle.tracker.lastSeenAt)}` : ''}</p>
 
+                        <p class="small muted" style="margin-top:10px">Mechanical condition · Rental status is automatic</p>
                         <div class="fleet-card-actions">
 
                             <select
                                 class="select"
-                                aria-label="Vehicle status"
+                                aria-label="Mechanical condition" title="Mechanical condition only; rental status is automatic"
                                 onchange="App.changeVehicleStatus(
                                     '${vehicle.id}',
                                     this.value
@@ -1499,12 +1744,10 @@ function renderAdminVehicles() {
                                 ${statuses.map(status => `
                                     <option
                                         value="${status}"
-                                        ${vehicle.status === status
-                                            ? 'selected'
-                                            : ''}
+                                        ${selectedCondition === status ? 'selected' : ''}
+                                        ${statuses.indexOf(status) < statuses.indexOf(minimumCondition) ? 'disabled' : ''}
                                     >
-                                        ${status.charAt(0).toUpperCase()
-                                            + status.slice(1)}
+                                        ${status === 'available' ? 'Serviceable' : status.charAt(0).toUpperCase() + status.slice(1)}
                                     </option>
                                 `).join('')}
                             </select>
@@ -1519,9 +1762,10 @@ function renderAdminVehicles() {
                             </button>
 
                         </div>
+                        ${minimumCondition !== 'available' ? `<div class="small muted" style="margin-top:8px">${recordCondition !== 'available' ? 'An open maintenance or incident record sets the minimum condition.' : 'A scheduled service is currently active.'} <button type="button" class="link-btn" onclick="App.openMaintenanceHistory('${esc(vehicle.id)}')">Review records</button> · <a href="#/admin/maintenance">Maintenance</a></div>` : ''}
                     </div>
                 </article>
-            `).join('')}
+            `; }).join('')}
 
         </div>
 
@@ -1532,162 +1776,379 @@ function renderAdminVehicles() {
 }
 
     // ---------- Admin: Reservations ----------
+    function adminReservationCardStyles() {
+        return `<style>
+        .vera-reservations{min-width:0}
+        .vera-reservations .res-tabs{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 16px;padding:0;border:0;overflow:visible}
+        .vera-reservations .res-tab{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border,#30363d);border-radius:20px;background:var(--surface,#161b22);color:var(--text-muted,#9da7b3);padding:7px 12px;cursor:pointer;font:inherit;font-size:13px;white-space:nowrap}
+        .vera-reservations .res-tab.active{border-color:var(--accent,#58a6ff);color:var(--accent,#58a6ff);background:var(--accent-soft,#172c42)}
+        .vera-reservations .res-tab-count{font-variant-numeric:tabular-nums;font-weight:600}
+        .vera-reservations .res-list{display:grid;gap:14px}
+        .vera-reservations .res-card{min-width:0;border:1px solid var(--border,#30363d);border-radius:10px;background:var(--surface,#161b22);overflow:hidden}
+        .vera-reservations .res-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--border,#30363d)}
+        .vera-reservations .res-id{font-size:12px;color:var(--text-muted,#9da7b3);font-weight:600;letter-spacing:.025em}
+        .vera-reservations .res-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:16px;padding:16px}
+        .vera-reservations .res-section{min-width:0;display:flex;flex-direction:column;gap:10px}
+        .vera-reservations .res-label{color:var(--text-muted,#9da7b3);font-size:11px;letter-spacing:.045em;text-transform:uppercase;font-weight:600}
+        .vera-reservations .res-person,.vera-reservations .res-bike{display:flex;gap:12px;align-items:center;min-width:0}
+        .vera-reservations .res-person-copy,.vera-reservations .res-bike-copy{min-width:0;display:grid;gap:4px;justify-items:start;overflow-wrap:anywhere}
+        .vera-reservations .res-name{font-size:15px;font-weight:600;line-height:1.35;color:var(--text,#e6edf3);overflow-wrap:anywhere}
+        .vera-reservations .res-avatar{position:relative;display:grid;place-items:center;width:64px;height:64px;flex:0 0 64px;border-radius:50%;overflow:hidden;background:var(--surface-alt,#21262d);border:1px solid var(--border,#30363d);font-size:20px;font-weight:600}
+        .vera-reservations .res-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+        .vera-reservations .res-bike-thumb{position:relative;display:grid;place-items:center;width:120px;height:86px;flex:0 0 120px;background:#fff;border-radius:6px;overflow:hidden;color:#667085;text-align:center;font-size:11px}
+        .vera-reservations .res-bike-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+        .vera-reservations .res-dates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+        .vera-reservations .res-date{display:grid;align-content:start;gap:3px;min-width:0;background:var(--bg,#0d1117);border:1px solid var(--border,#30363d);border-radius:6px;padding:10px}
+        .vera-reservations .res-date strong{font-size:13px;line-height:1.35;overflow-wrap:anywhere}
+        .vera-reservations .res-date .res-time{font-size:13px;color:var(--accent,#58a6ff);font-weight:500}
+        .vera-reservations .res-delivery{display:flex;flex-wrap:wrap;gap:5px 12px;line-height:1.45}
+        .vera-reservations .res-footer{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;border-top:1px solid var(--border,#30363d);padding:12px 16px}
+        .vera-reservations .res-finance{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+        .vera-reservations .res-finance-item{display:grid;gap:4px;justify-items:start}
+        .vera-reservations .res-price{font-size:20px;line-height:1.25;font-weight:600;font-variant-numeric:tabular-nums}
+        .vera-reservations .res-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+        .vera-reservations .res-actions .btn{min-height:36px;justify-content:center;padding:7px 13px}
+        .vera-reservations .res-actions .btn-primary{min-width:100px}
+        @media(max-width:640px){.vera-reservations .res-body{padding:12px;gap:18px}.vera-reservations .res-head,.vera-reservations .res-footer{padding:12px}.vera-reservations .res-actions{width:100%}.vera-reservations .res-actions .btn{flex:1 1 auto}.vera-reservations .res-bike-thumb{width:108px;flex-basis:108px}}
+        </style>`;
+    }
+    function adminReservationDate(label, iso) {
+        const d = new Date(iso);
+        const valid = !!iso && Number.isFinite(d.getTime());
+        const time = valid ? d.toLocaleTimeString('en-PH', {timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit',hour12:true}) : '—';
+        return `<div class="res-date"><span class="res-label">${esc(label)}</span><strong>${valid ? esc(fmtDateShort(iso)) : '—'}</strong><span class="res-time">${esc(time)}</span></div>`;
+    }
+    function adminReservationCard(r) {
+        const v = getVehicle(r.vehicleId);
+        const c = getCustomer(r.customerId) || state.customers.find(item => !r.customerId && item.email === r.customerEmail);
+        const p = getPaymentByReservation(r.id);
+        const name = c?.name || r.customerName || 'Unknown customer';
+        const initials = name.trim().split(/\s+/).filter(Boolean).slice(0,2).map(w => w[0].toUpperCase()).join('') || '?';
+        const photo = safeCustomerImage(c?.profileImage);
+        const bikePhoto = v?.imageUrlAlt || v?.imageUrl;
+        const duration = Date.parse(r.end) - Date.parse(r.start);
+        const billableDays = Number.isFinite(duration) && duration > 0 ? Math.ceil(duration / 86400000) : null;
+        const paymentLabels = {pending:'Awaiting verification',verified:'Payment verified',rejected:'Proof rejected'};
+        const paymentStatus = p ? (paymentLabels[p.status] || p.status || 'Unknown') : 'No payment recorded';
+        const paymentClass = p && ['pending','verified','rejected'].includes(p.status) ? p.status : 'neutral';
+        const [pickupMethod, returnMethod] = getDeliveryMethod(r).split(' & ');
+        const id = esc(r.id);
+        return `<article class="res-card">
+            <div class="res-head"><span class="res-id">RESERVATION #${esc(String(r.id).toUpperCase())}</span>${statusBadge(r.status)}</div>
+            <div class="res-body">
+                <section class="res-section"><span class="res-label">Customer</span><div class="res-person">
+                    <div class="res-avatar"><span aria-hidden="true">${esc(initials)}</span>${photo ? `<img src="${photo}" alt="${esc(name)} profile photo" onerror="this.remove()">` : ''}</div>
+                    <div class="res-person-copy"><div class="res-name">${esc(name)}</div><div class="small muted">${esc(c?.email || r.customerEmail || '—')}</div>${c ? identityBadge(c) : '<span class="small muted">Profile unavailable</span>'}</div>
+                </div></section>
+                <section class="res-section"><span class="res-label">Motorcycle</span><div class="res-bike">
+                    <div class="res-bike-thumb"><span>Image unavailable</span>${bikePhoto ? `<img src="${esc(bikePhoto)}" alt="${esc(v.name || 'Motorcycle')}" loading="lazy" onerror="this.remove()">` : ''}</div>
+                    <div class="res-bike-copy"><div class="res-name">${esc(v ? [v.brand,v.name].filter(Boolean).join(' ') : r.vehicleId)}</div><div class="small muted">${esc([v?.year,v?.plateNumber].filter(Boolean).join(' · ') || '—')}</div>${v?.displacement ? `<div class="small muted">${esc(v.displacement)}cc</div>` : ''}</div>
+                </div></section>
+                <section class="res-section"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><span class="res-label">Rental schedule (PHT)</span>${billableDays ? `<span class="small muted">${billableDays} billable day${billableDays === 1 ? '' : 's'}</span>` : ''}</div>
+                    <div class="res-dates">${adminReservationDate('Pickup',r.start)}${adminReservationDate('Return',r.end)}</div>
+                    <div class="res-delivery small muted">${returnMethod ? `<span>${esc(pickupMethod)}</span><span>· ${esc(returnMethod)}</span>` : `<span>${esc(pickupMethod)}</span>`}</div>
+                </section>
+            </div>
+            <div class="res-footer"><div class="res-finance"><div class="res-finance-item"><span class="res-label">Rental fee</span><strong class="res-price">${fmtPHP(r.totalFee)}</strong>${r.overtimeFee ? `<span class="small muted">+ ${fmtPHP(r.overtimeFee)} overtime</span>` : ''}</div><div class="res-finance-item"><span class="res-label">Payment</span><span class="status status-${paymentClass}">${esc(paymentStatus)}</span></div></div>
+            <div class="res-actions"><a href="#/admin/reservation/${id}" class="btn">View details</a>
+            ${r.status === 'pending' ? `<button class="btn btn-primary" onclick="App.approveReservation('${id}')">Approve</button><button class="btn btn-danger" onclick="App.openRejectReservationModal('${id}')">Reject</button>` : ''}
+            ${r.status === 'approved' ? `<button class="btn btn-primary" onclick="App.startRental('${id}')">Start rental</button>` : ''}
+            ${r.status === 'ongoing' ? `<button class="btn btn-primary" onclick="App.openCompleteModal('${id}')">Complete rental</button>` : ''}
+            </div></div>
+        </article>`;
+    }
     function renderAdminReservations() {
         const tab = state.ui.adminResTab || 'pending';
-        const tabs = [['pending', 'Pending'], ['approved', 'Approved'], ['ongoing', 'Ongoing'], ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['rejected', 'Rejected']];
-        const list = state.reservations.filter(r => r.status === tab).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Reservations</h1><p class="page-desc">Review requests and manage rental status transitions.</p></div></div>
-      <div class="tabs">${tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'active' : ''}" onclick="App.setUI('adminResTab','${k}'); App.render()">${l} <span class="faint">(${state.reservations.filter(r => r.status === k).length})</span></button>`).join('')}</div>
-      ${list.length ? `<div class="panel"><div class="panel-body flush"><table class="table"><thead><tr><th>Customer</th><th>Vehicle</th><th>Period</th><th>Amount</th><th>Payment</th><th>Actions</th></tr></thead><tbody>${list.map(r => {
-            const v = getVehicle(r.vehicleId);
-            const p = getPaymentByReservation(r.id);
-            return `<tr>
-          <td><div class="cell-main">${esc(r.customerName)}</div><div class="cell-sub">${esc(r.customerEmail)}</div></td>
-          <td><div class="cell-main">${esc(v ? v.name : r.vehicleId)}</div><div class="cell-sub">${esc(v ? v.plateNumber : '')}</div></td>
-          <td class="small">${fmtDateShort(r.start)} - ${fmtDateShort(r.end)}<div class="cell-sub">${esc(getDeliveryMethod(r))}</div></td>
-          <td>${fmtPHP(r.totalFee)}${r.overtimeFee ? `<div class="cell-sub">+ ${fmtPHP(r.overtimeFee)} OT</div>` : ''}</td>
-          <td>${p ? statusBadge(p.status) : '<span class="small muted">None</span>'}</td>
-          <td><div class="btn-group">
-            <a href="#/admin/reservation/${r.id}" class="btn btn-sm">View</a>
-            ${r.status === 'pending' ? `<button class="btn btn-sm btn-primary" onclick="App.approveReservation('${r.id}')">Approve</button><button class="btn btn-sm btn-danger" onclick="App.openRejectReservationModal('${r.id}')">Reject</button>` : ''}
-            ${r.status === 'approved' ? `<button class="btn btn-sm btn-primary" onclick="App.startRental('${r.id}')">Start rental</button>` : ''}
-            ${r.status === 'ongoing' ? `<button class="btn btn-sm btn-primary" onclick="App.openCompleteModal('${r.id}')">Complete</button>` : ''}
-          </div></td>
-        </tr>`;
-        }).join('')}</tbody></table></div></div>` : `<div class="empty"><div class="empty-title">No ${esc(tab)} reservations</div><div>Reservations with this status will appear here.</div></div>`}
-    `);
+        const tabs = [['pending','Pending'],['approved','Approved'],['ongoing','Ongoing'],['completed','Completed'],['cancelled','Cancelled'],['rejected','Rejected']];
+        const list = state.reservations.filter(r => r.status === tab).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+        mount(`<div class="vera-reservations">${adminReservationCardStyles()}
+            <div class="page-header"><div><h1 class="page-title">Reservations</h1><p class="page-desc">Review booking requests and manage rentals.</p></div></div>
+            <div class="res-tabs" role="group" aria-label="Reservation status">${tabs.map(([k,l]) => `<button type="button" class="res-tab ${tab === k ? 'active' : ''}" aria-pressed="${tab === k}" onclick="App.setUI('adminResTab','${k}'); App.render()">${l}<span class="res-tab-count">${state.reservations.filter(r => r.status === k).length}</span></button>`).join('')}</div>
+            ${list.length ? `<div class="res-list">${list.map(adminReservationCard).join('')}</div>` : `<div class="empty"><div class="empty-title">No ${esc(tab)} reservations</div><div>Reservations with this status will appear here.</div></div>`}
+        </div>`);
     }
     function renderAdminReservationDetail(id) {
         renderReservationDetail(id, true);
     }
     // ---------- Admin: Payments ----------
-    function renderAdminPayments() {
-        const list = state.payments.slice().sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Payments &amp; Refunds</h1><p class="page-desc">Review submitted payment proofs and confirm verification status.</p></div></div>
-      ${list.length ? `<div class="panel"><div class="panel-body flush"><table class="table"><thead><tr><th>Customer</th><th>Reservation</th><th>Payment type</th><th>Method</th><th>Amount</th><th>Submitted</th><th>Status</th><th>Actions</th></tr></thead><tbody>${list.map(p => {
-            const r = getReservation(p.reservationId);
-            const v = r ? getVehicle(r.vehicleId) : null;
-            return `<tr>
-          <td class="cell-main">${esc(r ? r.customerName : '—')}</td>
-          <td><div class="cell-main">${esc(v ? v.name : '—')}</div><div class="cell-sub mono">${esc(r ? r.id.toUpperCase() : '')}</div></td>
-          <td>${p.paymentType === 'overtime' ? 'Overtime' : 'Rental'}</td><td>${esc(p.method)}</td>
-          <td>${fmtPHP(p.amount)}</td>
-          <td class="small">${fmtDate(p.submittedAt, { time: true })}</td>
-          <td>${statusBadge(p.status)}</td>
-          <td><div class="btn-group">
-            <button class="btn btn-sm" onclick="App.openPaymentModal('${p.id}')">View proof</button>
-            ${p.status === 'pending' ? `<button class="btn btn-sm btn-primary" onclick="App.verifyPayment('${p.id}')">Verify</button><button class="btn btn-sm btn-danger" onclick="App.openRejectPaymentModal('${p.id}')">Reject</button>` : ''}
-          </div></td>
-        </tr>`;
-        }).join('')}</tbody></table></div></div>` : `<div class="empty"><div class="empty-title">No payments</div><div>Submitted payment proofs will appear here.</div></div>`}
-      <div style="margin-top:16px">
-        ${reservationPanel('Refunds', `<div class="toolbar"><button class="btn btn-primary" onclick="App.openRefundSelection()">Assess refund</button></div><div class="table-wrap"><table class="table"><thead><tr><th>Customer</th><th>Reservation</th><th>Reason</th><th>Responsibility</th><th>Refund amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>${state.reservations.filter(r => r.refund?.amount > 0).map(r => `<tr><td>${esc(r.customerName)}</td><td>${esc(r.id.toUpperCase())}</td><td>${esc(refundReasonLabel(r.refund))}</td><td>${esc(refundResponsibility(r.refund))}</td><td>${fmtPHP(r.refund.amount)}</td><td>${esc(r.refund.status)}</td><td><a class="btn btn-sm" href="#/admin/reservation/${r.id}">View</a> ${r.refund.status === 'pending' ? `<button class="btn btn-primary btn-sm" onclick="App.openRefundModal('${r.id}')">Record refund</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No refunds recorded.</td></tr>'}</tbody></table></div>`)}
-      </div>
-    `);
+    // ---------- Financial workspace (admin) ----------
+    const finNum = n => Number.isFinite(Number(n)) ? Number(n) : 0;
+    const finSum = (rows, f) => rows.reduce((n,x)=>n+finNum(f(x)),0);
+    const finType = p => p.paymentType || 'rental';
+    const finRef = x => String(x || '').trim().toUpperCase();
+    const finDate = x => Number.isFinite(Date.parse(x)) ? fmtDate(x,{time:true}) : '—';
+    const finExpected = p => {const r=getReservation(p.reservationId);return r ? finNum(finType(p)==='overtime'?r.overtimeFee:r.totalFee) : null;};
+    const finPaid = (r,type) => finSum(state.payments.filter(p=>p.reservationId===r.id&&finType(p)===type&&p.status==='verified'),p=>p.amount);
+    const finDue = r => Math.max(0,['approved','ongoing','completed'].includes(r.status)?finNum(r.totalFee)-finPaid(r,'rental'):0)+Math.max(0,r.status==='completed'?finNum(r.overtimeFee)-finPaid(r,'overtime'):0);
+    const finDeposit = r => r.securityDeposit || null;
+    const finDepositEligible = r => ['approved','ongoing','completed'].includes(r.status)||!!finDeposit(r);
+    const finDepositStatus = r => finDeposit(r)?.status || 'awaiting collection';
+    const finLabel = r => `${r.customerName || 'Unknown'} · ${getVehicle(r.vehicleId)?.name || r.vehicleId} · ${String(r.id).toUpperCase()}`;
+    const finMetric = (l,v) => `<div class="metric"><div class="metric-label">${esc(l)}</div><div class="metric-value sm">${esc(v)}</div></div>`;
+    const finEmpty = '<div class="empty">No matching records.</div>';
+    function finTable(headers,rows){return `<div class="table-wrap"><table class="table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>${rows.length?'':finEmpty}</div>`;}
+    function finTabs(items,active,key){return `<div class="chip-group mb-3">${items.map(([k,l])=>`<button class="chip ${active===k?'active':''}" onclick="App.setUI('${key}','${k}');App.render()">${esc(l)}</button>`).join('')}</div>`;}
+    function finExport(name,rows){if(!adminOnly())return;const cell=v=>'"'+String(v??'').replace(/^\s*[=+\-@]/,m=>"'"+m).replace(/"/g,'""')+'"';const url=URL.createObjectURL(new Blob(['\ufeff'+rows.map(r=>r.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=name+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);logActivity({module:'Reports',action:'Exported',entityId:name,description:'CSV export: '+name,changes:[]});}
+    function finFilter(e){e.preventDefault();if(!adminOnly())return;const f=e.target.elements;Object.assign(state.ui,{finQuery:f.query.value.trim(),finMethod:f.method.value,finStatus:f.status.value});render();}
+    function finPaymentRows(){const q=(state.ui.finQuery||'').toLowerCase(),m=state.ui.finMethod||'all',s=state.ui.finStatus||'all',tab=state.ui.finTab||'queue';return state.payments.filter(p=>{const r=getReservation(p.reservationId);return (tab!=='queue'||p.status==='pending')&&(m==='all'||p.method===m)&&(tab==='queue'||s==='all'||p.status===s)&&[p.id,p.referenceNumber,p.reservationId,p.method,r&&finLabel(r)].join(' ').toLowerCase().includes(q);}).sort((a,b)=>Date.parse(b.submittedAt)-Date.parse(a.submittedAt));}
+    function finReservations(){const q=(state.ui.finQuery||'').toLowerCase();return state.reservations.filter(r=>[finLabel(r),r.customerEmail,r.refund?.referenceNumber,finDeposit(r)?.referenceNumber,finDeposit(r)?.returnReference].join(' ').toLowerCase().includes(q));}
+    function finPaymentCard(p){const r=getReservation(p.reservationId),c=r&&getCustomer(r.customerId),v=r&&getVehicle(r.vehicleId),expected=finExpected(p);return `<div class="panel"><div class="panel-body" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap"><div style="display:flex;gap:12px;align-items:center;flex:1;min-width:190px">${c?customerAvatar(c):''}<div><strong>${esc(r?.customerName||'Unknown')}</strong><div class="small muted">${esc(v?.name||'—')} · ${esc(String(p.reservationId).toUpperCase())}</div><div class="small muted">${esc(finType(p))} · ${esc(p.method)}</div></div></div><div style="flex:1;min-width:150px"><div class="small muted">Submitted ${finDate(p.submittedAt)}</div>${statusBadge(p.status)}<div class="small muted">Ref: ${esc(p.referenceNumber||'Not recorded')}</div></div><div style="min-width:120px"><strong style="font-size:19px">${fmtPHP(p.amount)}</strong><div class="small muted">Expected ${expected===null?'—':fmtPHP(expected)}</div>${expected!==null&&finNum(p.amount)!==expected?'<div style="color:var(--danger)" class="small">Amount mismatch</div>':''}</div><div class="btn-group"><button class="btn ${p.status==='pending'?'btn-primary':''}" onclick="App.openPaymentModal('${esc(p.id)}')">${p.status==='pending'?'Review proof':'View proof'}</button>${p.status==='pending'?`<button class="btn btn-danger" onclick="App.openRejectPaymentModal('${esc(p.id)}')">Reject</button>`:''}</div></div></div>`;}
+    function renderAdminPayments(filter){if(!adminOnly())return;if(filter==='pending'&&state.ui.finRoute!==location.hash)state.ui.finTab='queue';state.ui.finRoute=location.hash;const tab=state.ui.finTab||'queue',payments=state.payments,rs=finReservations(),rows=finPaymentRows(),refunds=state.reservations.filter(r=>r.refund?.status==='pending'),held=state.reservations.filter(r=>finDeposit(r)?.status==='held');let content='';const opt=(items,val)=>items.map(x=>`<option value="${esc(x)}" ${x===val?'selected':''}>${esc(x==='all'?'All':x)}</option>`).join('');
+      if(tab==='queue')content=`<div class="stack">${rows.map(finPaymentCard).join('')||finEmpty}</div>`;
+      if(tab==='transactions')content=`<div class="panel">${finTable(['Customer / reservation','Type','Method','Reference','Amount','Status','Action'],rows.map(p=>{const r=getReservation(p.reservationId);return [esc(r?finLabel(r):p.reservationId),esc(finType(p)),esc(p.method),esc(p.referenceNumber||'—'),fmtPHP(p.amount),statusBadge(p.status),`<button class="btn btn-sm" onclick="App.openPaymentModal('${esc(p.id)}')">Review</button>`];}))}</div>`;
+      if(tab==='outstanding')content=`<div class="panel">${finTable(['Customer / rental','Rental due','Overtime due','Total due','Action'],rs.filter(r=>finDue(r)>0).map(r=>[esc(finLabel(r)),fmtPHP(Math.max(0,finNum(r.totalFee)-finPaid(r,'rental'))),fmtPHP(Math.max(0,finNum(r.overtimeFee)-finPaid(r,'overtime'))),fmtPHP(finDue(r)),`<a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}">View reservation</a>`]))}</div><p class="small muted mt-2">Approved, ongoing and completed rental charges only. Submitted but unverified proof is not a receipt.</p>`;
+      if(tab==='refunds')content=`<div class="toolbar"><button class="btn btn-primary" onclick="App.openRefundSelection()">Assess refund</button></div><div class="panel">${finTable(['Customer / rental','Reason','Responsibility','Refund','Status','Action'],rs.filter(r=>r.refund?.amount>0).map(r=>[esc(finLabel(r)),esc(refundReasonLabel(r.refund)),esc(refundResponsibility(r.refund)),fmtPHP(r.refund.amount),esc(({pending:'Awaiting disbursement',disbursed:'Disbursed',received:'Acknowledged'})[r.refund.status]||r.refund.status),`<a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}">View</a> ${r.refund.status==='pending'?`<button class="btn btn-primary btn-sm" onclick="App.openRefundModal('${esc(r.id)}')">Record refund</button>`:''}`]))}</div>`;
+      if(tab==='deposits')content=`<div class="callout small mb-3">Deposits are recorded separately from rental receipts. Only record money actually received or returned. Historical rentals with no deposit record are not assumed paid.</div><div class="panel">${finTable(['Customer / rental','Deposit','Status','Reference','Action'],rs.filter(finDepositEligible).map(r=>{const d=finDeposit(r);return [esc(finLabel(r)),fmtPHP(d?.amount??getDepositAmount()),esc(finDepositStatus(r)),esc(d?.referenceNumber||'—'),!d&&['approved','ongoing'].includes(r.status)?`<button class="btn btn-sm btn-primary" onclick="App.finDepositModal('${esc(r.id)}')">Record collection</button>`:d?.status==='held'&&['completed','cancelled'].includes(r.status)?`<button class="btn btn-sm btn-primary" onclick="App.finDepositModal('${esc(r.id)}')">Settle deposit</button>`:`<a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}">View</a>`];}))}</div>`;
+      mount(`<div class="page-header"><div><h1 class="page-title">Payments &amp; Refunds</h1><p class="page-desc">Review proofs, reconcile balances and record refunds and deposits.</p></div><button class="btn" onclick="App.finExportPayments()">Export CSV</button></div><div class="metrics mb-3">${finMetric('Awaiting verification',payments.filter(p=>p.status==='pending').length)}${finMetric('Verified payments · all time',fmtPHP(finSum(payments.filter(p=>p.status==='verified'),p=>p.amount)))}${finMetric('Outstanding balances',fmtPHP(finSum(state.reservations,finDue)))}${finMetric('Pending refunds',fmtPHP(finSum(refunds,r=>r.refund.amount)))}</div>${finTabs([['queue','Verification queue'],['transactions','Transactions'],['outstanding','Outstanding'],['refunds','Refunds'],['deposits','Security deposits']],tab,'finTab')}<form class="toolbar" onsubmit="App.finFilter(event)"><input name="query" class="input grow" placeholder="Search customer, reservation, reference..." value="${esc(state.ui.finQuery||'')}"><select class="select" name="method" ${['queue','transactions'].includes(tab)?'':'disabled'}>${opt(['all',...new Set(payments.map(p=>p.method))],state.ui.finMethod||'all')}</select><select class="select" name="status" ${tab==='transactions'?'':'disabled'}>${opt(['all','pending','verified','rejected'],tab==='queue'?'all':state.ui.finStatus||'all')}</select><button class="btn">Filter</button></form>${tab==='deposits'?`<p class="muted small mb-3">Currently held: ${fmtPHP(finSum(held,r=>finDeposit(r).amount))}</p>`:''}${content}`);
     }
+    function finExportPayments(){const tab=state.ui.finTab||'queue',rs=finReservations();let rows;if(tab==='refunds')rows=[['Reservation','Customer','Amount','Status','Reference'],...rs.filter(r=>r.refund?.amount>0).map(r=>[r.id,r.customerName,r.refund.amount,r.refund.status,r.refund.referenceNumber])];else if(tab==='outstanding')rows=[['Reservation','Customer','Outstanding'],...rs.filter(r=>finDue(r)>0).map(r=>[r.id,r.customerName,finDue(r)])];else if(tab==='deposits')rows=[['Reservation','Customer','Deposit','Status','Returned','Applied to overtime'],...rs.filter(finDepositEligible).map(r=>[r.id,r.customerName,finDeposit(r)?.amount??getDepositAmount(),finDepositStatus(r),finDeposit(r)?.returnedAmount,finDeposit(r)?.appliedOvertime])];else rows=[['Payment','Reservation','Type','Method','Amount','Status','Reference','Verified at'],...finPaymentRows().map(p=>[p.id,p.reservationId,finType(p),p.method,p.amount,p.status,p.referenceNumber,p.verifiedAt])];finExport('vera-'+tab,rows);}
+    function finDuplicate(p,ref){return !!finRef(ref)&&(state.payments.some(x=>x.id!==p.id&&x.status!=='rejected'&&finRef(x.referenceNumber)===finRef(ref))||state.reservations.some(r=>[finDeposit(r)?.referenceNumber,finDeposit(r)?.returnReference,r.refund?.referenceNumber].some(x=>finRef(x)===finRef(ref))));}
+    function openPaymentModal(pid){if(!adminOnly())return;const p=state.payments.find(x=>x.id===pid);if(!p)return;const r=getReservation(p.reservationId),expected=finExpected(p),pending=p.status==='pending',match=expected!==null&&expected===finNum(p.amount);openModal(`<div class="modal" style="width:min(900px,96vw);max-width:900px"><div class="modal-header"><div class="modal-title">Review payment</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form onsubmit="App.finVerify(event,'${esc(pid)}')"><div class="modal-body stack"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px"><div><div class="proof-preview" style="min-height:180px">${p.proofDataUrl?`<img src="${esc(p.proofDataUrl)}" alt="Payment proof" style="max-height:420px;object-fit:contain;max-width:100%">`:'<span class="muted">No proof image recorded</span>'}</div>${p.proofDataUrl?`<a class="btn btn-sm mt-2" href="${esc(p.proofDataUrl)}" target="_blank" rel="noopener">Open image</a>`:''}</div><div class="stack"><strong>${esc(r?finLabel(r):p.reservationId)}</strong>${statusBadge(p.status)}<div>Method: ${esc(p.method)}</div><div>Expected: <strong>${expected===null?'Unknown':fmtPHP(expected)}</strong></div><div>Submitted: <strong>${fmtPHP(p.amount)}</strong></div><div class="small muted">Submitted ${finDate(p.submittedAt)}</div>${!match?'<div class="callout danger">Amount does not match the charge.</div>':''}${p.rejectReason?`<div class="callout danger">${esc(p.rejectReason)}</div>`:''}${pending?`<label class="field"><span class="field-label">Transaction reference (from receiving account)</span><input class="input" name="reference" value="${esc(p.referenceNumber||'')}" required maxlength="100"></label><label><input type="checkbox" name="amountChecked" required> Amount and reference checked</label><label><input type="checkbox" name="received" required> Funds confirmed in receiving account</label><p class="small muted">Duplicate references are checked automatically.</p>`:`<div>Reference: ${esc(p.referenceNumber||'Not recorded')}</div><div class="small muted">Verified by ${esc(p.verifiedBy||'—')} · ${finDate(p.verifiedAt)}</div>`}</div></div></div><div class="modal-footer">${pending?`<button type="button" class="btn btn-danger" onclick="App.openRejectPaymentModal('${esc(pid)}')">Reject</button><button type="submit" class="btn btn-primary" ${match&&p.proofDataUrl?'':'disabled'}>Verify payment</button>`:'<button type="button" class="btn" onclick="App.closeModal()">Close</button>'}</div></form></div>`);}
+    function verifyPayment(pid){openPaymentModal(pid);}
+    function finVerify(e,pid){e.preventDefault();if(!adminOnly())return;const p=state.payments.find(x=>x.id===pid),f=e.target.elements,r=p&&getReservation(p.reservationId),ref=f.reference.value.trim();if(!p||!r||p.status!=='pending'||!p.proofDataUrl||!ref||!f.amountChecked.checked||!f.received.checked)return toast('Complete the verification checks.','error');if(finExpected(p)!==finNum(p.amount)||finNum(p.amount)<=0)return toast('Amount does not match.','error');if(finDuplicate(p,ref))return toast('Duplicate payment reference.','error');if(finPaid(r,finType(p))>0)return toast('This charge is already settled.','error');if(finType(p)==='rental'&&r.status!=='approved'||finType(p)==='overtime'&&r.status!=='completed')return toast('Reservation is not eligible for this payment.','error');Object.assign(p,{referenceNumber:ref,status:'verified',verifiedAt:new Date().toISOString(),verifiedBy:'Admin',rejectReason:''});if(finType(p)==='overtime'&&r.overtime)r.overtime.paymentStatus='paid';notify('customer','Payment verified',`Your ${finType(p)} payment has been verified.`,`#/customer/reservation/${r.id}`,r.customerId);closeModal();toast('Payment verified.','success');render();}
+    function finDepositPanel(r,admin){const d=finDeposit(r);if(!finDepositEligible(r))return '';return reservationPanel('Security deposit',`<div class="kv"><div class="k">Amount</div><div>${fmtPHP(d?.amount??getDepositAmount())}</div><div class="k">Status</div><div>${esc(finDepositStatus(r))}</div>${d?.status==='settled'?`<div class="k">Returned</div><div>${fmtPHP(d.returnedAmount)}</div><div class="k">Applied to overtime</div><div>${fmtPHP(d.appliedOvertime)}</div>`:''}</div>${admin&&(!d&&['approved','ongoing'].includes(r.status)||d?.status==='held'&&['completed','cancelled'].includes(r.status))?`<button class="btn btn-block mt-2" onclick="App.finDepositModal('${esc(r.id)}')">${d?'Settle deposit':'Record collection'}</button>`:''}<p class="muted small mt-2">Refundable deposit is separate from rental payment.</p>`);}
+    function finDepositModal(id){if(!adminOnly())return;const r=getReservation(id);if(!r)return;const d=finDeposit(r),settle=d?.status==='held';if(d&&!settle||settle&&!['completed','cancelled'].includes(r.status)||!d&&!['approved','ongoing'].includes(r.status))return;const ot=r.status==='completed'&&['unpaid','rejected'].includes(overtimeStatus(r))?finNum(r.overtimeFee):0;openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">${settle?'Settle deposit':'Record deposit collection'}</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form onsubmit="App.finSaveDeposit(event,'${esc(id)}')"><div class="modal-body stack"><strong>${esc(finLabel(r))}</strong><div>Deposit: ${fmtPHP(d?.amount??getDepositAmount())}</div>${settle&&ot>0&&ot<=d.amount?`<label><input type="checkbox" name="apply"> Apply ${fmtPHP(ot)} to the full unpaid overtime charge (includes assessed add-ons)</label>`:''}<label class="field"><span class="field-label">${settle?'Return / settlement':'Collection'} reference</span><input class="input" name="reference" required maxlength="100"></label><label class="field"><span class="field-label">Notes / justification</span><textarea class="input" name="notes" required maxlength="500"></textarea></label><label><input type="checkbox" name="confirmed" required> ${settle?'I confirm the remaining deposit has been returned externally, or the entire amount was applied to the charge.':'I confirm the deposit was actually received.'}</label><p class="small muted">No automatic money transfer. Partial overtime payments are not supported.</p></div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary">Record</button></div></form></div>`);}
+    function finSaveDeposit(e,id){e.preventDefault();if(!adminOnly())return;const r=getReservation(id),f=e.target.elements,ref=f.reference.value.trim(),notes=f.notes.value.trim(),now=new Date().toISOString();if(!r||!ref||!notes||!f.confirmed.checked)return;const d=finDeposit(r);if(finDuplicate({id:null},ref))return toast('Deposit reference already recorded.','error');if(!d&&['approved','ongoing'].includes(r.status)){r.securityDeposit={amount:getDepositAmount(),status:'held',referenceNumber:ref,notes,collectedAt:now,collectedBy:'Admin'};}else if(d?.status==='held'&&['completed','cancelled'].includes(r.status)){let applied=0;if(f.apply?.checked){applied=finNum(r.overtimeFee);if(r.status!=='completed'||!['unpaid','rejected'].includes(overtimeStatus(r))||applied<=0||applied>d.amount)return toast('Overtime no longer eligible.','error');const p=getPaymentByReservation(id,'overtime'),values={reservationId:id,paymentType:'overtime',method:'Security deposit',amount:applied,status:'verified',submittedAt:now,verifiedAt:now,verifiedBy:'Admin',referenceNumber:'DEPOSIT-'+ref,rejectReason:'',proofDataUrl:''};if(p)Object.assign(p,values);else state.payments.unshift({id:uid('p'),...values});if(r.overtime)r.overtime.paymentStatus='paid';}Object.assign(d,{status:'settled',returnedAmount:d.amount-applied,appliedOvertime:applied,returnReference:ref,settlementNotes:notes,settledAt:now,settledBy:'Admin'});}else return;logActivity({module:'Payments',action:d?'Deposit settled':'Deposit collected',entityId:id,description:finLabel(r),link:'#/admin/reservation/'+id,changes:[]});closeModal();toast('Deposit record saved.','success');render();}
     // ---------- Admin: Maintenance ----------
+    function maintenanceDue(v) {
+        const date = v.serviceDueDate || '', km = v.serviceDueMileage;
+        if (!date && km == null) return 'Not configured';
+        if ((date && date <= todayKey()) || (km != null && v.odometer != null && v.odometer >= km)) return 'Due';
+        if ((date && Date.parse(date + 'T00:00:00+08:00') - Date.parse(todayKey() + 'T00:00:00+08:00') <= 7 * 86400000) || (km != null && v.odometer != null && km - v.odometer <= 500)) return 'Due soon';
+        return 'Up to date';
+    }
+    function maintenanceTileStyles() {
+        return `<style>
+        .vera-maint .maint-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+        .vera-maint .maint-filter{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+        .vera-maint .maint-count{margin-left:3px}
+        .vera-maint .maint-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:stretch}
+        .vera-maint .maint-tile{display:flex;flex-direction:column;min-width:0;border:1px solid var(--border,#30363d);border-radius:6px;background:var(--panel,#161b22);overflow:hidden}
+        .vera-maint .maint-attention{border-top:2px solid #e3b341}
+        .vera-maint .maint-bike-heading{display:flex;gap:12px;padding:14px;align-items:center;border-bottom:1px solid var(--border,#30363d);min-height:124px;box-sizing:border-box}
+        .vera-maint .maint-bike-image{width:116px;height:84px;flex:0 0 116px;display:flex;align-items:center;justify-content:center;border-radius:4px;background:#fff;overflow:hidden}
+        .vera-maint .maint-bike-image img{display:block;width:100%;height:100%;object-fit:contain}
+        .vera-maint .maint-bike-name{min-width:0;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+        .vera-maint .maint-bike-name h2{font-size:18px;line-height:1.25;margin:0;overflow-wrap:anywhere}
+        .vera-maint .maint-bike-name p{margin:0}
+        .vera-maint .maint-bike-name .mono{font-size:11px}
+        .vera-maint .maint-tile-body{padding:14px;flex:1;display:flex;flex-direction:column;gap:10px}
+        .vera-maint .maint-section-head,.maint-history-modal .maint-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+        .vera-maint .maint-specs{margin:0;display:grid;gap:6px;font-size:12px}
+        .vera-maint .maint-specs>div{display:flex;justify-content:space-between;gap:10px}
+        .vera-maint .maint-specs dt{color:var(--muted,#8babc6)}
+        .vera-maint .maint-specs dd{margin:0;text-align:right}
+        .vera-maint .maint-mini{background:var(--bg,#0f141a);border:1px solid var(--border,#30363d);border-radius:4px;padding:10px;margin:0;overflow-wrap:anywhere}
+        .vera-maint .maint-mini p{margin:4px 0}
+        .vera-maint .maint-mini-footer{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:8px}
+        .vera-maint .maint-alert{color:#e3b341}
+        .vera-maint .maint-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px 14px;border-top:1px solid var(--border,#30363d)}
+        .vera-maint .maint-actions .btn{width:100%;white-space:normal;min-height:34px}
+        .maint-history-modal{width:min(720px,94vw);max-width:720px}
+        .maint-history-modal .modal-body{max-height:65vh;overflow:auto}
+        .vera-maint .maint-record,.maint-history-modal .maint-record{border:1px solid var(--border,#30363d);border-radius:5px;padding:12px;display:grid;gap:8px;overflow-wrap:anywhere}
+        .vera-maint .maint-record-top,.maint-history-modal .maint-record-top,.vera-maint .maint-record-meta,.maint-history-modal .maint-record-meta{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+        .vera-maint .maint-description,.maint-history-modal .maint-description{margin:0;white-space:pre-wrap}
+        @media(max-width:1150px){.vera-maint .maint-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:700px){.vera-maint .maint-grid{grid-template-columns:minmax(0,1fr)}.vera-maint .maint-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        </style>`;
+    }
+    function maintenanceTileData(vehicle) {
+        const logs = state.maintenanceLogs.filter(l => l.vehicleId === vehicle.id)
+            .sort((a, b) => new Date(b.reportedAt) - new Date(a.reportedAt));
+        const open = logs.filter(l => l.status === 'open');
+        const services = state.opsServices.filter(s => s.vehicleId === vehicle.id)
+            .sort((a, b) => new Date(a.start) - new Date(b.start));
+        const scheduled = services.filter(s => s.status === 'scheduled');
+        const due = maintenanceDue(vehicle);
+        const needsAttention = open.length > 0 || ['Due', 'Due soon'].includes(due) ||
+            vehicleOperationalState(vehicle).condition !== 'available' || vehicleOperationalState(vehicle).service;
+        return { vehicle, logs, open, services, scheduled, due, needsAttention };
+    }
+
+    function maintenancePlanBadge(due) {
+        const cls = { 'Due': 'open', 'Due soon': 'pending', 'Up to date': 'available', 'Not configured': 'neutral' };
+        return `<span class="status status-${cls[due] || 'neutral'}">${esc(due)}</span>`;
+    }
+
+    function maintenanceKm(value) {
+        return value == null || value === '' ? '—' : `${Number(value).toLocaleString('en-PH')} km`;
+    }
+
+    function maintenanceRecordHTML(log) {
+        return `<div class="maint-record">
+            <div class="maint-record-top"><span class="status ${log.type === 'incident' ? 'status-malfunction' : 'status-approved'}">${esc(log.type)}</span>${statusBadge(log.status)}</div>
+            <strong>${esc(log.title)}</strong>
+            <p class="muted small maint-description">${esc(log.description)}</p>
+            <div class="maint-record-meta"><span>${fmtDate(log.reportedAt, {time:true})}</span><span>${fmtPHP(log.cost || 0)}</span></div>
+            <div class="small muted">Damage: ${esc(damageLabel(log.damageLocation))} · ${(log.photos || []).length} photo(s)${log.resolvedAt ? ` · Resolved ${fmtDateShort(log.resolvedAt)}` : ''}</div>
+            <button class="btn btn-sm" onclick="App.viewMaintenance('${esc(log.id)}')">View record</button>
+        </div>`;
+    }
+
+    function maintenanceTileHTML(item) {
+        const { vehicle: v, open, logs, scheduled, due, needsAttention } = item;
+        const next = scheduled[0];
+        const latest = open[0] || logs[0];
+        const id = esc(v.id);
+        return `<article class="maint-tile ${needsAttention ? 'maint-attention' : ''}">
+            <div class="maint-bike-heading">
+                <div class="maint-bike-image">${vehicleImage(v)}</div>
+                <div class="maint-bike-name"><h2>${esc(v.name)}</h2><p class="muted small">${esc(v.brand)} · ${esc(v.year)}</p><span class="mono muted">${esc(v.plateNumber)}</span>${vehicleOperationalBadges(v)}</div>
+            </div>
+            <div class="maint-tile-body">
+                <div class="maint-section-head"><strong>Service plan</strong>${maintenancePlanBadge(due)}</div>
+                <dl class="maint-specs">
+                    <div><dt>Odometer</dt><dd>${maintenanceKm(v.odometer)}</dd></div>
+                    <div><dt>Next service date</dt><dd>${v.serviceDueDate ? fmtDateShort(v.serviceDueDate + 'T00:00:00+08:00') : '—'}</dd></div>
+                    <div><dt>Next service odometer</dt><dd>${maintenanceKm(v.serviceDueMileage)}</dd></div>
+                </dl>
+                <div class="maint-section-head"><strong>Scheduled service</strong><span class="muted small">${scheduled.length} planned</span></div>
+                ${next ? `<div class="maint-mini"><strong>${esc(next.title)}</strong><p class="small muted">${fmtDate(next.start,{time:true})}</p><div class="maint-mini-footer"><span class="muted small">${fmtDateShort(next.end)}</span><button class="btn btn-sm" onclick="App.openServiceModal('${id}','','${esc(next.id)}')">Manage</button></div></div>` : '<p class="small muted maint-mini">No upcoming service scheduled.</p>'}
+                <div class="maint-section-head"><strong>${open.length ? 'Open issues' : 'Latest record'}</strong><span class="${open.length ? 'maint-alert' : 'muted'} small">${open.length} open · ${logs.length} total</span></div>
+                ${latest ? `<div class="maint-mini"><strong>${esc(latest.title)}</strong><p class="small muted">${fmtDateShort(latest.reportedAt)} · ${fmtPHP(latest.cost || 0)}</p><div class="maint-mini-footer">${statusBadge(latest.status)}<button class="btn btn-sm" onclick="App.viewMaintenance('${esc(latest.id)}')">View</button></div></div>` : '<p class="small muted maint-mini">No maintenance records yet.</p>'}
+            </div>
+            <div class="maint-actions">
+                <button class="btn" onclick="App.openServicePlan('${id}')">Service plan</button>
+                <button class="btn" onclick="App.openServiceModal('${id}')">Schedule service</button>
+                <button class="btn" onclick="App.openMaintenanceHistory('${id}')">History</button>
+                <button class="btn btn-primary" onclick="App.openMaintenanceModal(null, '${id}')">Log entry</button>
+            </div>
+        </article>`;
+    }
+
     function renderAdminMaintenance() {
-        const logs = state.maintenanceLogs.slice().sort((a, b) => new Date(b.reportedAt) - new Date(a.reportedAt));
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Maintenance and incidents</h1><p class="page-desc">Track service records and reported vehicle issues.</p></div><div><button class="btn btn-primary" onclick="App.openMaintenanceModal()">Log entry</button></div></div>
-      ${servicePlanningHTML()}
-      <h2 class="panel-title mb-3">Maintenance and incident history</h2>
-      ${logs.length ? `<div class="panel"><div class="panel-body flush"><div class="table-wrap"><table class="table"><thead><tr><th>Vehicle</th><th>Type</th><th>Damage</th><th>Photos</th><th>Title</th><th>Reported</th><th>Cost</th><th>Status</th><th>Actions</th></tr></thead><tbody>${logs.map(l => {
-            const v = getVehicle(l.vehicleId);
-            return `<tr>
-          <td><div class="cell-main">${esc(v ? v.name : l.vehicleId)}</div><div class="cell-sub">${esc(v ? v.plateNumber : '')}</div></td>
-          <td><span class="status ${l.type === 'incident' ? 'status-malfunction' : 'status-approved'}">${esc(l.type)}</span></td>
-          <td>${esc(damageLabel(l.damageLocation))}</td>
-          <td>${(l.photos || []).length}</td>
-          <td><div class="cell-main">${esc(l.title)}</div><div class="cell-sub">${esc(l.description)}</div></td>
-          <td class="small">${fmtDate(l.reportedAt, { time: true })}${l.resolvedAt ? `<div class="cell-sub">Resolved ${fmtDateShort(l.resolvedAt)}</div>` : ''}</td>
-          <td>${fmtPHP(l.cost || 0)}</td>
-          <td>${statusBadge(l.status)}</td>
-          <td><button class="btn btn-sm" onclick="App.viewMaintenance('${l.id}')">View</button></td>
-        </tr>`;
-        }).join('')}</tbody></table></div></div></div>` : `<div class="empty"><div class="empty-title">No maintenance or incident records</div><div>Log service work or reported issues to track vehicle condition.</div></div>`}
-    `);
+        if (!adminOnly()) return;
+        const items = state.vehicles.map(maintenanceTileData);
+        const attention = items.filter(x => x.needsAttention);
+        const scheduled = items.filter(x => x.scheduled.length);
+        const unconfigured = items.filter(x => x.due === 'Not configured');
+        const filters = [
+            ['all', 'All motorcycles', items],
+            ['attention', 'Needs attention', attention],
+            ['scheduled', 'Scheduled', scheduled],
+            ['unconfigured', 'No service plan', unconfigured]
+        ];
+        const selected = filters.find(([key]) => key === state.ui.maintenanceTileFilter) || filters[0];
+        const visible = selected[2].slice().sort((a,b) => Number(b.needsAttention) - Number(a.needsAttention));
+        const orphanLogs = state.maintenanceLogs.filter(l => !getVehicle(l.vehicleId));
+        mount(`${maintenanceTileStyles()}<section class="vera-maint"><div class="page-header"><div><h1 class="page-title">Maintenance and incidents</h1><p class="page-desc">Manage service plans, scheduled work and motorcycle condition in one place.</p></div><div class="btn-group"><button class="btn" onclick="App.openServiceModal()">Schedule service</button><button class="btn btn-primary" onclick="App.openMaintenanceModal()">Log entry</button></div></div>
+            <div class="metrics maint-metrics mb-3">${[
+                ['Motorcycles', items.length], ['Needs attention', attention.length],
+                ['Open records', state.maintenanceLogs.filter(l => l.status === 'open').length],
+                ['Scheduled jobs', state.opsServices.filter(s => s.status === 'scheduled').length]
+            ].map(([label,value]) => `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value">${value}</div></div>`).join('')}</div>
+            <div class="maint-filter chip-group" aria-label="Filter maintenance vehicles">${filters.map(([key,label,list]) => `<button class="chip ${selected[0] === key ? 'active' : ''}" aria-pressed="${selected[0] === key}" onclick="App.setUI('maintenanceTileFilter','${key}'); App.render()">${label} <span class="maint-count">${list.length}</span></button>`).join('')}</div>
+            ${visible.length ? `<div class="maint-grid">${visible.map(maintenanceTileHTML).join('')}</div>` : '<div class="empty"><div class="empty-title">No motorcycles match this filter</div>Choose another filter to see the fleet.</div>'}
+            ${orphanLogs.length ? `<section class="section mt-3"><h2 class="section-title mb-2">Records without a matching motorcycle</h2><div class="stack">${orphanLogs.map(maintenanceRecordHTML).join('')}</div></section>` : ''}</section>`);
+    }
+
+    function openMaintenanceHistory(id) {
+        if (state.role !== 'admin') return;
+        const vehicle = getVehicle(id);
+        if (!vehicle) return;
+        const { logs, services } = maintenanceTileData(vehicle);
+        openModal(`<div class="modal maint-history-modal"><div class="modal-header"><div><div class="modal-title">${esc(vehicle.name)} — maintenance history</div><div class="muted small">${esc(vehicle.plateNumber)}</div></div><button class="icon-btn" aria-label="Close" onclick="App.closeModal()">&times;</button></div>
+            <div class="modal-body stack"><div class="maint-section-head"><h3>Scheduled service</h3></div>
+            ${services.length ? services.map(s => `<div class="maint-record"><div class="maint-record-top"><strong>${esc(s.title)}</strong><span class="status status-${s.status === 'scheduled' ? 'approved' : s.status === 'completed' ? 'completed' : 'neutral'}">${esc(s.status)}</span></div><div class="small muted">${fmtDate(s.start,{time:true})} – ${fmtDate(s.end,{time:true})}</div>${s.status === 'scheduled' ? `<div class="btn-group"><button class="btn btn-sm btn-primary" onclick="App.openServiceModal('${esc(s.vehicleId)}','','${esc(s.id)}')">Manage / complete</button><button class="btn btn-sm btn-danger" onclick="App.finishService('${esc(s.id)}','cancelled')">Cancel</button></div>` : ''}</div>`).join('') : '<p class="muted small">No scheduled service records.</p>'}
+            <div class="divider"></div><h3>Maintenance and incident records</h3>
+            ${logs.length ? logs.map(maintenanceRecordHTML).join('') : '<p class="muted small">No records yet.</p>'}</div>
+            <div class="modal-footer"><button class="btn" onclick="App.closeModal()">Close</button><button class="btn btn-primary" onclick="App.openMaintenanceModal(null, '${esc(id)}')">Log entry</button></div></div>`);
     }
     // ---------- Admin: Reports ----------
-    function renderAdminReports() {
-        const range = state.ui.reportRange || 'month';
-        const now = new Date();
-        const inRange = (iso) => {
-            if (!iso)
-                return false;
-            const d = new Date(iso);
-            if (range === 'all')
-                return true;
-            if (range === 'month')
-                return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-            const last = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-            return d.getMonth() === last.getMonth() && d.getFullYear() === last.getFullYear();
-        };
-        const completed = state.reservations.filter(r => r.status === 'completed' && inRange(r.actualReturn || r.end));
-        const totalRev = completed.reduce((s, r) => s + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r), 0);
-        const totalOT = completed.reduce((s, r) => s + (r.overtimeFee || 0), 0);
-        const perV = state.vehicles.map(v => ({ v, rev: completed.filter(r => r.vehicleId === v.id).reduce((s, r) => s + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r), 0) })).filter(x => x.rev > 0).sort((a, b) => b.rev - a.rev);
-        const maxRev = Math.max(1, ...perV.map(x => x.rev));
-        const daysInPeriod = range === 'all' ? 90 : new Date(now.getFullYear(), range === 'month' ? now.getMonth() + 1 : now.getMonth(), 0).getDate();
-        const utilization = state.vehicles.map(v => {
-            const rentedDays = state.reservations.filter(r => r.vehicleId === v.id && ['approved', 'ongoing', 'completed'].includes(r.status) && inRange(r.start)).reduce((s, r) => {
-                const endD = r.actualReturn ? new Date(r.actualReturn) : new Date(r.end);
-                const ms = Math.min(endD, now) - new Date(r.start);
-                return s + Math.max(0, Math.ceil(ms / 86400000));
-            }, 0);
-            const pct = Math.min(100, Math.round((rentedDays / Math.max(1, daysInPeriod)) * 100));
-            return { v, rentedDays, pct };
-        });
-        const counts = { pending: 0, approved: 0, ongoing: 0, completed: 0, cancelled: 0, rejected: 0 };
-        state.reservations.filter(r => inRange(r.createdAt)).forEach(r => {
-            if (counts[r.status] != null)
-                counts[r.status]++;
-        });
-        const displacementCounts = Object.entries(DISPLACEMENT_CLASSES).map(([key, label]) => ({ label, count: state.reservations.filter(r => inRange(r.createdAt) && String(getVehicle(r.vehicleId)?.displacement) === key).length }));
-        const displacementMax = Math.max(1, ...displacementCounts.map(x => x.count));
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Reports</h1><p class="page-desc">Summary of earnings, utilization, and reservation activity.</p></div>
-        <div><select class="select" onchange="App.setUI('reportRange', this.value); App.render()">
-          <option value="month" ${range === 'month' ? 'selected' : ''}>This month</option>
-          <option value="last" ${range === 'last' ? 'selected' : ''}>Last month</option>
-          <option value="all" ${range === 'all' ? 'selected' : ''}>All time</option>
-        </select></div></div>
-      <div class="metrics mb-3">
-        <div class="metric"><div class="metric-label">Total revenue</div><div class="metric-value sm">${fmtPHP(totalRev)}</div></div>
-        <div class="metric"><div class="metric-label">Overtime collected</div><div class="metric-value sm">${fmtPHP(totalOT)}</div></div>
-        <div class="metric"><div class="metric-label">Completed rentals</div><div class="metric-value">${completed.length}</div></div>
-        <div class="metric"><div class="metric-label">Reservations created</div><div class="metric-value">${state.reservations.filter(r => inRange(r.createdAt)).length}</div></div>
-      </div>
-      <div class="grid-2 mb-3">
-        <div class="panel"><div class="panel-header"><div class="panel-title">Revenue by vehicle</div></div><div class="panel-body">
-          ${perV.length ? perV.map(x => `<div class="bar-row"><div class="bar-label"><span>${esc(x.v.name)}</span><span>${fmtPHP(x.rev)}</span></div><div class="bar-track"><div class="bar-fill" style="width:${(x.rev / maxRev * 100).toFixed(1)}%"></div></div></div>`).join('') : `<div class="small muted">No completed revenue in this period.</div>`}
-        </div></div>
-        <div class="panel"><div class="panel-header"><div class="panel-title">Vehicle utilization</div><span class="small muted">Estimated rented days</span></div><div class="panel-body">
-          ${utilization.map(u => `<div class="bar-row"><div class="bar-label"><span>${esc(u.v.name)}</span><span>${u.rentedDays} days · ${u.pct}%</span></div><div class="bar-track"><div class="bar-fill alt" style="width:${u.pct}%"></div></div></div>`).join('')}
-        </div></div>
-      </div>
-      <div class="grid-2">
-        <div class="panel"><div class="panel-header"><div class="panel-title">Reservations by status</div><span class="small muted">By creation date</span></div><div class="panel-body flush"><table class="table"><tbody>${Object.entries(counts).map(([k, v]) => `<tr><td style="text-transform:capitalize">${esc(k)}</td><td class="text-right"><strong>${v}</strong></td></tr>`).join('')}</tbody></table></div></div>
-        <div class="panel"><div class="panel-header"><div class="panel-title">Reservations by displacement</div></div><div class="panel-body">
-          ${displacementCounts.map(x => `<div class="bar-row"><div class="bar-label"><span>${esc(x.label)}</span><span>${x.count}</span></div><div class="bar-track"><div class="bar-fill" style="width:${x.count / displacementMax * 100}%"></div></div></div>`).join('')}
-        </div></div>
-      </div>
-    `);
+    // ---------- Reports & analytics ----------
+    function reportPeriod(){const now=Date.now(),tk=todayKey(),[y,m]=tk.split('-').map(Number),day=86400000,month=(yy,mm)=>Date.UTC(yy,mm-1,1)-8*3600000;let a=month(y,m),b=Math.min(month(y,m+1),now),range=state.ui.reportRange||'month';if(range==='last'){a=month(y,m-1);b=month(y,m);}if(range==='all'){const stamps=[...state.reservations.flatMap(r=>[r.createdAt,r.start]),...state.payments.map(p=>p.verifiedAt),...state.maintenanceLogs.map(l=>l.reportedAt)].map(Date.parse).filter(x=>Number.isFinite(x)&&x<=now);a=stamps.length?Date.parse(toManilaDateKey(new Date(Math.min(...stamps)).toISOString())+'T00:00:00+08:00'):Date.parse(tk+'T00:00:00+08:00');b=now;}if(range==='custom'){const x=Date.parse((state.ui.reportFrom||tk)+'T00:00:00+08:00'),z=Date.parse((state.ui.reportTo||tk)+'T00:00:00+08:00')+day;if(Number.isFinite(x)&&Number.isFinite(z)&&x<z){a=x;b=Math.min(z,now);}}return {a,b:Math.max(a,b),now,range};}
+    function reportIn(x,a,b){const t=Date.parse(x);return Number.isFinite(t)&&t>=a&&t<b;}
+    function reportUnion(intervals,a,b){let total=0,end=a;for(const [s,e] of intervals.map(([s,e])=>[Math.max(a,s),Math.min(b,e)]).filter(([s,e])=>Number.isFinite(s)&&Number.isFinite(e)&&e>s).sort((x,y)=>x[0]-y[0])){total+=Math.max(0,e-Math.max(s,end));end=Math.max(end,e);}return total/86400000;}
+    function reportStats(a,b){const inR=x=>reportIn(x,a,b),now=Date.now(),rs=state.reservations,pay=state.payments.filter(p=>p.status==='verified'&&inR(p.verifiedAt)),completed=rs.filter(r=>r.status==='completed'&&inR(r.actualReturn||r.end)),created=rs.filter(r=>inR(r.createdAt)),refunds=rs.filter(r=>refundDeducted(r)>0&&inR(r.refund.refundedAt)),logs=state.maintenanceLogs.filter(l=>l.status==='resolved'&&inR(l.resolvedAt)),rental=finSum(pay.filter(p=>finType(p)==='rental'),p=>p.amount),ot=finSum(pay.filter(p=>finType(p)==='overtime'),p=>p.amount),applied=finSum(pay.filter(p=>p.method==='Security deposit'),p=>p.amount),ref=finSum(refunds,r=>r.refund.amount),cost=finSum(logs,l=>l.cost),fleet=state.vehicles.map(v=>{const own=rs.filter(r=>r.vehicleId===v.id),paid=pay.filter(p=>getReservation(p.reservationId)?.vehicleId===v.id),days=reportUnion(own.filter(r=>['ongoing','completed'].includes(r.status)).map(r=>[Date.parse(r.startedAt||r.start),r.status==='ongoing'?now:Date.parse(r.actualReturn||r.end)]),a,b),downtime=reportUnion(state.maintenanceLogs.filter(l=>l.vehicleId===v.id).map(l=>[Date.parse(l.reportedAt),l.status==='open'?now:Date.parse(l.resolvedAt)]),a,b);return {v,days,downtime,pct:b>a?days/((b-a)/86400000)*100:0,receipts:finSum(paid,p=>p.amount),cost:finSum(logs.filter(l=>l.vehicleId===v.id),l=>l.cost),count:completed.filter(r=>r.vehicleId===v.id).length};}),newCustomers=state.customers.filter(c=>inR(c.joinedAt)),renters=[...new Set(completed.map(r=>r.customerId).filter(Boolean))],repeat=renters.filter(id=>rs.filter(r=>r.customerId===id&&r.status==='completed'&&Date.parse(r.actualReturn||r.end)<b).length>=2).length,late=completed.filter(r=>Date.parse(r.actualReturn)>Date.parse(r.end)).length;return {pay,completed,created,refunds,logs,rental,ot,applied,ref,cost,net:rental+ot-ref,fleet,newCustomers,renters,repeat,late,billed:finSum(completed,r=>r.totalFee),assessed:finSum(completed,r=>r.overtimeFee),depositIn:finSum(rs.filter(r=>inR(finDeposit(r)?.collectedAt)),r=>finDeposit(r).amount),depositOut:finSum(rs.filter(r=>inR(finDeposit(r)?.settledAt)),r=>finDeposit(r).returnedAmount)};}
+    function reportBars(title,rows,format=x=>String(x)){const max=Math.max(1,...rows.map(r=>Math.max(0,r[1])));return reservationPanel(title,rows.length?rows.map(([label,n])=>`<div class="bar-row"><div class="bar-label"><span>${esc(label)}</span><strong>${esc(format(n))}</strong></div><div class="bar-track"><div class="bar-fill" style="width:${Math.max(0,n)/max*100}%"></div></div></div>`).join(''):finEmpty);}
+    const reportBike=v=>`${v.name} · ${v.plateNumber}`;
+    const reportPct=(n,d)=>d?`${(100*n/d).toFixed(1)}%`:'—';
+    function reportMetrics(items){return `<div class="metrics mb-3">${items.map(([l,v])=>finMetric(l,v)).join('')}</div>`;}
+    function reportRangeChange(e){e.preventDefault();const f=e.target.elements;if(!f.from.value||!f.to.value||f.from.value>f.to.value||f.from.value>todayKey())return toast('Select a valid date range.','error');Object.assign(state.ui,{reportFrom:f.from.value,reportTo:f.to.value,reportRange:'custom'});render();}
+    function reportRows(tab,s){switch(tab){case 'fleet':return [['Motorcycle','Plate','Completed rentals','Occupied days','Utilization %','Estimated mechanical hold days','Verified receipts','Maintenance cost'],...s.fleet.map(x=>[x.v.name,x.v.plateNumber,x.count,x.days.toFixed(2),x.pct.toFixed(1),x.downtime.toFixed(2),x.receipts,x.cost])];case 'reservations':return [['Reservation','Customer','Vehicle','Created','Status','Start','End'],...s.created.map(r=>[r.id,r.customerName,getVehicle(r.vehicleId)?.name,r.createdAt,r.status,r.start,r.end])];case 'customers':return [['Customer','Joined','Verification','Completed rentals in range'],...state.customers.filter(c=>s.renters.includes(c.id)||s.newCustomers.includes(c)).map(c=>[c.name,c.joinedAt,identityStatus(c),s.completed.filter(r=>r.customerId===c.id).length])];case 'maintenance':return [['Record','Vehicle','Type','Cost','Resolved'],...s.logs.map(l=>[l.title,getVehicle(l.vehicleId)?.name,l.type,l.cost,l.resolvedAt])];default:return [['Metric','PHP'],['Billed completed rental',s.billed],['Rental receipts',s.rental],['Overtime assessed on completed rentals',s.assessed],['Overtime settled',s.ot],['Of which applied from deposit',s.applied],['Refunds disbursed',s.ref],['Net operating receipts',s.net],['Resolved maintenance cost',s.cost],['Contribution after recorded maintenance',s.net-s.cost],['Deposit collected',s.depositIn],['Deposit returned',s.depositOut]];}}
+    function reportExport(){const p=reportPeriod(),tab=state.ui.reportTab||'financial';finExport('vera-report-'+tab,reportRows(tab,reportStats(p.a,p.b)));}
+    function renderAdminReports(){if(!adminOnly())return;const p=reportPeriod(),s=reportStats(p.a,p.b),tab=state.ui.reportTab||'financial',fmt=n=>fmtPHP(n),day=86400000,avg=s.completed.length?finSum(s.completed,r=>Math.max(0,(Date.parse(r.actualReturn||r.end)-Date.parse(r.startedAt||r.start))/day))/s.completed.length:0,util=s.fleet.length&&p.b>p.a?finSum(s.fleet,x=>x.pct)/s.fleet.length:0;let content='',insights=[];const compare=state.ui.reportCompare&&p.range!=='all'?reportStats(p.a-(p.b-p.a),p.a):null;const groups=Object.keys(DISPLACEMENT_CLASSES).map(k=>[k+'cc',s.created.filter(r=>String(getVehicle(r.vehicleId)?.displacement)===k).length]);const top=groups.slice().sort((a,b)=>b[1]-a[1])[0],high=s.fleet.slice().sort((a,b)=>b.cost-a.cost)[0];if(top?.[1])insights.push(`Highest request volume: ${top[0]} (${top[1]} requests). Review fleet allocation before expanding.`);if(high?.cost>0)insights.push(`${reportBike(high.v)} has the highest resolved maintenance cost (${fmt(high.cost)}). Review cost relative to receipts.`);if(s.late)insights.push(`${s.late} completed rentals returned late in this period. Consider pickup scheduling buffers.`);const due=finSum(state.reservations,finDue);if(due>0)insights.push(`${fmt(due)} in current outstanding balances. Review the Outstanding tab.`);
+      if(tab==='financial'){const trend=[];let cursor=new Date(p.a+8*3600000);cursor=new Date(Date.UTC(cursor.getUTCFullYear(),cursor.getUTCMonth(),1));for(let i=0;i<240&&cursor.getTime()-8*3600000<p.b;i++){const a=Math.max(p.a,cursor.getTime()-8*3600000),next=new Date(Date.UTC(cursor.getUTCFullYear(),cursor.getUTCMonth()+1,1)),b=Math.min(p.b,next.getTime()-8*3600000);if(b>a)trend.push([cursor.toLocaleString('en-PH',{month:'short',year:'numeric',timeZone:'UTC'}),reportStats(a,b).net]);cursor=next;}content=reportMetrics([['Rental receipts',fmt(s.rental)],['Overtime settled',fmt(s.ot)],['Refunds disbursed',fmt(s.ref)],['Net operating receipts',fmt(s.net)]])+reportMetrics([['Billed completed rentals',fmt(s.billed)],['Overtime assessed',fmt(s.assessed)],['Recorded maintenance costs',fmt(s.cost)],['Contribution after maintenance',fmt(s.net-s.cost)]])+`<div class="grid-2 mb-3">${reportBars('Net operating receipts by month',trend,fmt)}${reportBars('Verified receipts by motorcycle',s.fleet.map(x=>[reportBike(x.v),x.receipts]).sort((a,b)=>b[1]-a[1]),fmt)}</div>${reservationPanel('Security deposit movements',`<div class="kv"><div class="k">Collected</div><div>${fmt(s.depositIn)}</div><div class="k">Returned</div><div>${fmt(s.depositOut)}</div><div class="k">Applied to overtime</div><div>${fmt(s.applied)}</div></div><p class="small muted mt-2">Deposit collections and returns are not rental revenue. Applied deposits are included in overtime settled once, as an internal allocation.</p>`)}<p class="small muted mt-2">Receipts use verification dates; refunds use disbursement dates. Contribution is not profit; other expenses and taxes are not recorded. Negative monthly values are labeled, not drawn as positive bars.</p>`;}
+      if(tab==='fleet')content=reportMetrics([['Fleet utilization',util.toFixed(1)+'%'],['Average completed rental',avg.toFixed(1)+' days'],['Estimated mechanical hold days',finSum(s.fleet,x=>x.downtime).toFixed(1)],['Completed rentals',s.completed.length]])+`<div class="grid-2 mb-3">${reportBars('Occupied time by motorcycle',s.fleet.map(x=>[reportBike(x.v),x.pct]),x=>x.toFixed(1)+'%')}${reportBars('Completed rentals by motorcycle',s.fleet.map(x=>[reportBike(x.v),x.count]))}</div><div class="panel">${finTable(['Motorcycle','Occupied days','Utilization','Hold days','Receipts / occupied day'],s.fleet.map(x=>[esc(reportBike(x.v)),x.days.toFixed(1),x.pct.toFixed(1)+'%',x.downtime.toFixed(1),x.days?fmt(x.receipts/x.days):'—']))}</div><p class="muted small mt-2">Occupancy uses actual return when available, scheduled start as fallback, and clips overlapping intervals to the elapsed period. Mechanical record duration estimates downtime; it may overlap occupancy.</p>`;
+      if(tab==='reservations'){const statuses=['pending','approved','ongoing','completed','cancelled','rejected'];const weekday=Array.from({length:7},(_,i)=>[['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i],s.created.filter(r=>new Date(Date.parse(r.start)+8*3600000).getUTCDay()===i).length]);content=reportMetrics([['Requests created',s.created.length],['Completed share',reportPct(s.created.filter(r=>r.status==='completed').length,s.created.length)],['Cancellation share',reportPct(s.created.filter(r=>r.status==='cancelled').length,s.created.length)],['Late returns',reportPct(s.late,s.completed.length)]])+`<div class="grid-2 mb-3">${reportBars('Current status of requests created in period',statuses.map(k=>[k,s.created.filter(r=>r.status===k).length]))}${reportBars('Demand by displacement',groups)}${reportBars('Requested pickup weekday',weekday)}${reportBars('Rejection reasons',Object.entries(s.created.filter(r=>r.status==='rejected').reduce((a,r)=>(a[r.rejectReason||'Not recorded']=(a[r.rejectReason||'Not recorded']||0)+1,a),Object.create(null))))}</div>`;}
+      if(tab==='customers')content=reportMetrics([['New customers',s.newCustomers.length],['Customers completing rentals',s.renters.length],['Returning renters',s.repeat],['Repeat renter share',reportPct(s.repeat,s.renters.length)]])+`<div class="grid-2">${reportBars('Renters by history',[['Returning',s.repeat],['First recorded rental',s.renters.length-s.repeat]])}${reportBars('Current verification status (all customers)',Object.entries(state.customers.reduce((a,c)=>(a[identityStatus(c)]=(a[identityStatus(c)]||0)+1,a),Object.create(null))))}</div><p class="small muted mt-2">Returning means at least two completed rentals by the end of the selected period. Verification is a current snapshot.</p>`;
+      if(tab==='maintenance')content=reportMetrics([['Resolved maintenance costs',fmt(s.cost)],['Resolved records',s.logs.length],['Current open records',state.maintenanceLogs.filter(l=>l.status==='open').length],['Mean resolution time',s.logs.length?(finSum(s.logs,l=>Math.max(0,(Date.parse(l.resolvedAt)-Date.parse(l.reportedAt))/day))/s.logs.length).toFixed(1)+' days':'—']])+`<div class="grid-2">${reportBars('Resolved cost by motorcycle',s.fleet.map(x=>[reportBike(x.v),x.cost]),fmt)}${reportBars('Cost by record type',[['Maintenance',finSum(s.logs.filter(l=>l.type==='maintenance'),l=>l.cost)],['Incident / corrective',finSum(s.logs.filter(l=>l.type==='incident'),l=>l.cost)]],fmt)}</div>`;
+      const range=p.range;mount(`<style>@media print{#sidebar,#topbar,#bottomNav,.report-tools,.report-tabs,.customer-footer,#veraAssistantBtn{display:none!important}body,.panel,.metric{background:white!important;color:black!important}.main,#appRoot{width:100%!important;max-width:none!important;padding:0!important}.metric-value,.metric-label,h1,h2,.panel-title,.muted,.bar-label{color:black!important}.panel,.metric{break-inside:avoid;border-color:#bbb!important}}</style><div class="page-header"><div><h1 class="page-title">Reports &amp; Analytics</h1><p class="page-desc">Financial and operational performance · Philippine time</p></div><div class="btn-group report-tools"><button class="btn" onclick="App.reportExport()">Export CSV</button><button class="btn" onclick="window.print()">Print</button></div></div><div class="toolbar report-tools"><select class="select" onchange="App.setUI('reportRange',this.value);App.render()">${[['month','This month'],['last','Last month'],['all','All time'],['custom','Custom range']].map(([k,l])=>`<option value="${k}" ${range===k?'selected':''}>${l}</option>`).join('')}</select>${range==='custom'?`<form class="toolbar" style="margin:0" onsubmit="App.reportRangeChange(event)"><input aria-label="From" name="from" type="date" class="input" value="${esc(state.ui.reportFrom||todayKey())}" required><input aria-label="To" name="to" type="date" class="input" value="${esc(state.ui.reportTo||todayKey())}" required><button class="btn">Apply</button></form>`:''}<label><input type="checkbox" ${state.ui.reportCompare?'checked':''} ${range==='all'?'disabled':''} onchange="App.setUI('reportCompare',this.checked);App.render()"> Compare previous equal-length period</label></div><p class="small muted mb-3">${fmtDateShort(new Date(p.a).toISOString())} – ${fmtDateShort(new Date(Math.max(p.a,p.b-1)).toISOString())}</p><div class="report-tabs">${finTabs([['financial','Financial'],['fleet','Fleet'],['reservations','Reservations'],['customers','Customers'],['maintenance','Maintenance']],tab,'reportTab')}</div>${compare?reportMetrics([['Previous net receipts',fmt(compare.net)],['Net receipts change',fmt(s.net-compare.net)],['Previous completed rentals',compare.completed.length],['Completed rental change',s.completed.length-compare.completed.length]]):''}${content}<div class="mt-3">${reservationPanel('Business insights',insights.length?insights.map(x=>`<div class="callout info small mb-2">${esc(x)}</div>`).join(''):'<p class="muted">Not enough data for recommendations in this period.</p>')}</div>`);}
+    // ---------- Admin: Customer management ----------
+    function customerReservationsFor(c) {
+        return state.reservations.filter(r => r.customerId === c.id || (!r.customerId && r.customerEmail === c.email));
     }
-    // ---------- Admin: Customers ----------
-    function renderAdminCustomers() {
-        const rows = state.customers.map(c => {
-            const mine = state.reservations.filter(r => r.customerId === c.id);
-            const spent = mine.filter(r => r.status === 'completed').reduce((s, r) => s + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r), 0);
-            return { c, count: mine.length, spent };
-        });
-        mount(`
-      <div class="page-header"><div><h1 class="page-title">Customers</h1><p class="page-desc">Customer records and rental summaries.</p></div></div>
-      <div class="panel"><div class="panel-body flush"><table class="table"><thead><tr><th>Customer</th><th>Contact</th><th>ID status</th><th>Total rentals</th><th>Total spent</th><th>Joined</th><th></th></tr></thead><tbody>${rows.map(({ c, count, spent }) => `
-        <tr><td><div style="display:flex;align-items:center;gap:10px">${customerAvatar(c)}<div>${esc(c.name)}<div class="cell-sub">${esc(c.id.toUpperCase())}</div></div></div></td><td><div>${esc(c.email)}</div><div class="cell-sub">${esc(c.phone)}</div></td><td>${identityBadge(c)}</td><td>${count}</td><td>${fmtPHP(spent)}</td><td class="small">${fmtDateShort(c.joinedAt)}</td><td class="text-right"><button class="btn btn-sm" onclick="App.openCustomerModal('${c.id}')">View profile</button></td></tr>`).join('')}</tbody></table></div></div>
-    `);
+    function customerIncidents(c) {
+        const ids = new Set(customerReservationsFor(c).map(r=>r.id));
+        return state.maintenanceLogs.filter(m=>m.type==='incident' && ids.has(m.reservationId));
+    }
+    function customerOutstanding(c) {
+        return customerReservationsFor(c).filter(r=>r.status==='completed' && ['unpaid','pending','rejected'].includes(overtimeStatus(r))).reduce((n,r)=>n+(Number(r.overtimeFee)||0),0);
+    }
+    function customerMetrics(c) {
+        const mine=customerReservationsFor(c), completed=mine.filter(r=>r.status==='completed');
+        const ids=new Set(mine.map(r=>r.id));
+        const paid=state.payments.filter(p=>ids.has(p.reservationId)&&p.status==='verified').reduce((n,p)=>n+(Number(p.amount)||0),0);
+        return {c,mine,count:mine.length,completed:completed.length,spent:paid-mine.reduce((n,r)=>n+refundDeducted(r),0),active:mine.some(r=>r.status==='ongoing'),outstanding:customerOutstanding(c)};
+    }
+    function customerRestriction(c) {
+        if(!c) return 'Customer account not found.';
+        if(c.accountStatus==='suspended'||c.accountStatus==='archived') return 'Customer account is '+c.accountStatus+'.';
+        if(customerOutstanding(c)>0) return 'Customer must settle outstanding overtime first.';
+        if(customerIncidents(c).some(m=>m.status==='open')) return 'Customer has an unresolved linked rental incident. Review the incident before proceeding.';
+        return '';
+    }
+    function customerEligibility(c,r) {
+        return [
+            ['Identity verified',identityStatus(c)==='verified'&&identityComplete(c.identification||{})],
+            ['Valid driving license',bookingHasLicense(c)&&getLicenseStatus(c,r).status==='Valid'],
+            ['No outstanding overtime',customerOutstanding(c)===0],
+            ['No unresolved linked incidents',!customerIncidents(c).some(m=>m.status==='open')],
+            ['Account active',!['suspended','archived'].includes(c.accountStatus)]
+        ];
+    }
+    function customerModuleStyle(){return `<style>
+    .cm-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.cm-stat{padding:15px;background:var(--surface);border:1px solid var(--border);border-radius:8px;min-width:0}.cm-stat strong{display:block;font-size:23px;margin-top:5px;overflow-wrap:anywhere}.cm-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.cm-toolbar .input{flex:1 1 220px;min-width:0}.cm-scroll{overflow-x:auto}.cm-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0}.cm-tabs .active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}.cm-profile{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}.cm-heading{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.cm-heading>div:nth-child(2){flex:1;min-width:160px}.cm-heading>div:first-child{width:68px!important;height:68px!important;flex-basis:68px!important}.cm-check{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border)}.cm-check:last-child{border-bottom:0}.cm-timeline{border-left:2px solid var(--border);padding-left:14px;margin-left:5px}.cm-timeline-item{position:relative;padding:0 0 16px;overflow-wrap:anywhere}.cm-timeline-item:before{content:'';position:absolute;left:-20px;top:6px;width:9px;height:9px;border-radius:50%;background:var(--accent)}.cm-pagebar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px;flex-wrap:wrap}.cm-profile .kv{overflow-wrap:anywhere}.cm-profile .panel{min-width:0}.cm-muted{color:var(--text-muted)}@media(max-width:900px){.cm-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.cm-profile{grid-template-columns:1fr}}@media(max-width:480px){.cm-toolbar>*{flex:1 1 100%}.cm-stat strong{font-size:19px}}
+    </style>`;}
+    function cmStats(items){return `<div class="cm-summary">${items.map(([label,value])=>`<div class="cm-stat"><div class="small muted">${esc(label)}</div><strong>${esc(value)}</strong></div>`).join('')}</div>`;}
+    function cmPanel(title,body){return `<section class="panel"><div class="panel-header"><div class="panel-title">${esc(title)}</div></div><div class="panel-body">${body}</div></section>`;}
+    function cmTable(head,rows){return `<div class="cm-scroll"><table class="table"><thead><tr>${head.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.join(''):`<tr><td colspan="${head.length}" class="muted">No records found.</td></tr>`}</tbody></table></div>`;}
+    function customerDirectoryRows(){
+        const q=String(state.ui.cmQuery||'').toLowerCase().trim(), filter=state.ui.cmFilter||'all', sort=state.ui.cmSort||'name';
+        return state.customers.map(customerMetrics).filter(({c,active})=>[c.name,c.email,c.phone,c.id].join(' ').toLowerCase().includes(q)&&(
+            filter==='all'||(filter==='unverified'&&identityStatus(c)!=='verified')||(filter==='active'&&active)||(filter==='restricted'&&!!customerRestriction(c))||identityStatus(c)===filter))
+            .sort((a,b)=>sort==='spent'?b.spent-a.spent:sort==='rentals'?b.count-a.count:sort==='newest'?Date.parse(b.c.joinedAt)-Date.parse(a.c.joinedAt):a.c.name.localeCompare(b.c.name));
+    }
+    function renderAdminCustomers(){
+        const all=state.customers.map(customerMetrics);
+        mount(`${customerModuleStyle()}<div class="page-header"><div><h1 class="page-title">Customers</h1><p class="page-desc">Manage customer profiles, verification and rental records.</p></div><button class="btn btn-primary" onclick="App.cmAddCustomer()">+ Add customer</button></div>
+        ${cmStats([['Total customers',all.length],['Verified',all.filter(x=>identityStatus(x.c)==='verified').length],['Unverified',all.filter(x=>identityStatus(x.c)!=='verified').length],['Active renters',all.filter(x=>x.active).length]])}
+        <div class="cm-toolbar"><input class="input" id="cmSearch" placeholder="Search name, email, phone or ID…" aria-label="Search customers" value="${esc(state.ui.cmQuery||'')}" oninput="App.cmFilter('cmQuery',this.value)"><select class="select" aria-label="Filter customers" onchange="App.cmFilter('cmFilter',this.value)">${[['all','All statuses'],['verified','Verified'],['unverified','Unverified'],['pending','Pending verification'],['expired','Expired license'],['active','Active renters'],['restricted','Restricted accounts']].map(([k,l])=>`<option value="${k}" ${(state.ui.cmFilter||'all')===k?'selected':''}>${l}</option>`).join('')}</select><select class="select" aria-label="Sort customers" onchange="App.cmFilter('cmSort',this.value)">${[['name','Name A–Z'],['newest','Newest first'],['rentals','Most reservations'],['spent','Highest total spent']].map(([k,l])=>`<option value="${k}" ${(state.ui.cmSort||'name')===k?'selected':''}>${l}</option>`).join('')}</select><button class="btn" onclick="App.cmExport()">Export CSV</button></div><div id="cmDirectory" class="panel"></div>`);cmRenderRows();
+    }
+    function cmFilter(key,value){if(!adminOnly()||!['cmQuery','cmFilter','cmSort'].includes(key))return;state.ui[key]=value;state.ui.cmPage=1;cmRenderRows();}
+    function cmPage(delta){if(!adminOnly())return;state.ui.cmPage=(state.ui.cmPage||1)+delta;cmRenderRows();}
+    function cmRenderRows(){const root=$('#cmDirectory');if(!root)return;const all=customerDirectoryRows(), pages=Math.max(1,Math.ceil(all.length/10)), page=Math.min(pages,Math.max(1,state.ui.cmPage||1));state.ui.cmPage=page;
+        root.innerHTML=cmTable(['Customer','Contact','Verification','Reservations','Total spent','Actions'],all.slice((page-1)*10,page*10).map(({c,count,spent})=>`<tr><td><div style="display:flex;gap:10px;align-items:center">${customerAvatar(c)}<div><strong>${esc(c.name)}</strong><div class="cell-sub">${esc(c.id.toUpperCase())} · ${customerReservationsFor(c).some(r=>r.status==='completed')?'Returning':'New / no completed rentals'}</div></div></div></td><td>${esc(c.email)}<div class="cell-sub">${esc(c.phone)}</div></td><td>${identityBadge(c)}${['suspended','archived'].includes(c.accountStatus)?`<div class="small" style="color:var(--danger)">${esc(c.accountStatus)}</div>`:''}</td><td>${count}</td><td><strong>${fmtPHP(spent)}</strong></td><td><a class="btn btn-sm" href="#/admin/customer/${esc(c.id)}">View profile</a></td></tr>`))+`<div class="cm-pagebar"><span class="small muted">${all.length?`Showing ${(page-1)*10+1}–${Math.min(page*10,all.length)} of ${all.length}`:'0 customers'}</span><div class="btn-group"><button class="btn btn-sm" ${page===1?'disabled':''} onclick="App.cmPage(-1)">Previous</button><span class="small muted">${page} / ${pages}</span><button class="btn btn-sm" ${page===pages?'disabled':''} onclick="App.cmPage(1)">Next</button></div></div>`;
+    }
+    function cmAddCustomer(){if(!adminOnly())return;openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Add customer</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form onsubmit="App.cmSaveCustomer(event)"><div class="modal-body stack">${[['name','Full name','text'],['email','Email','email'],['phone','Phone','tel']].map(([key,label,type])=>`<label class="field"><span class="field-label">${label}</span><input name="${key}" type="${type}" class="input" required maxlength="150"></label>`).join('')}<p class="small muted">Add a demo customer record. Identity verification is completed separately; no login credentials are created.</p></div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary">Add customer</button></div></form></div>`);}
+    function cmSaveCustomer(e){e.preventDefault();if(!adminOnly())return;const f=e.target.elements,name=f.name.value.trim(),email=f.email.value.trim(),phone=f.phone.value.trim();if(!name||!email||!phone)return toast('Complete all contact fields.','error');if(state.customers.some(c=>c.email.toLowerCase()===email.toLowerCase()))return toast('Email already in use.','error');const c={id:uid('c'),name,email,phone,joinedAt:new Date().toISOString(),totalRentals:0,profileImage:'',accountStatus:'active',identification:{verificationStatus:'not_submitted'}};state.customers.push(c);closeModal();toast('Customer added.','success');navigate('#/admin/customer/'+c.id);}
+    function cmExport(){if(!adminOnly())return;const cell=x=>'"'+String(x??'').replace(/^[\s]*[=+\-@]/,m=>"'"+m).replace(/"/g,'""')+'"';const rows=[['Customer ID','Name','Email','Phone','Verification','Account status','Reservations','Verified net receipts'],...customerDirectoryRows().map(({c,count,spent})=>[c.id,c.name,c.email,c.phone,identityStatus(c),c.accountStatus||'active',count,spent])];const url=URL.createObjectURL(new Blob(['\ufeff'+rows.map(r=>r.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='vera-customers.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);logActivity({module:'Customers',action:'Directory exported',entityId:'directory',description:'Filtered customer CSV export',changes:[]});}
+    function cmStatusModal(id){if(!adminOnly())return;const c=getCustomer(id);if(!c)return;openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Account status · ${esc(c.name)}</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form onsubmit="App.cmSaveStatus(event,'${esc(id)}')"><div class="modal-body stack"><label class="field"><span class="field-label">Status</span><select name="status" class="select">${['active','suspended','archived'].map(s=>`<option ${(c.accountStatus||'active')===s?'selected':''}>${s}</option>`).join('')}</select></label><label class="field"><span class="field-label">Reason / review decision</span><textarea class="input" name="reason" required maxlength="500"></textarea></label><p class="small muted">Suspension and archiving prevent new bookings and vehicle release, but preserve records, payments and existing returns.</p></div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary">Save status</button></div></form></div>`);}
+    function cmSaveStatus(e,id){e.preventDefault();if(!adminOnly())return;const c=getCustomer(id),status=e.target.elements.status.value,reason=e.target.elements.reason.value.trim();if(!c||!['active','suspended','archived'].includes(status)||!reason)return toast('A reason is required.','error');Object.assign(c,{accountStatus:status,accountStatusReason:reason,accountStatusAt:new Date().toISOString()});closeModal();toast('Account status saved.','success');render();}
+    function cmSaveNote(e,id){e.preventDefault();if(!adminOnly())return;const c=getCustomer(id),note=e.target.elements.note.value.trim();if(!c||!note)return;c.adminCustomerNotes=c.adminCustomerNotes||[];c.adminCustomerNotes.unshift({id:uid('note'),text:note,createdAt:new Date().toISOString()});logActivity({module:'Customers',action:'Internal note added',entityId:id,description:'Customer note added',changes:[]});toast('Note saved.','success');render();}
+    function cmLinkIncident(e,id){e.preventDefault();if(!adminOnly())return;const c=getCustomer(id),f=e.target.elements,m=state.maintenanceLogs.find(x=>x.id===f.incident.value),r=getReservation(f.reservation.value);if(!c||!m||m.type!=='incident'||m.reservationId||!r||!customerReservationsFor(c).includes(r)||m.vehicleId!==r.vehicleId||!['ongoing','completed'].includes(r.status)||!f.confirm.checked)return toast('Select a matching rental and incident, then confirm the link.','error');m.reservationId=r.id;toast('Incident linked to reservation.','success');render();}
+    function cmUnlinkIncident(id,mid){if(!adminOnly())return;const c=getCustomer(id),m=c&&customerIncidents(c).find(x=>x.id===mid);if(!m)return;openConfirm({title:'Remove incident link?',body:'The maintenance record will remain intact. Only the customer association is removed.',confirmLabel:'Remove link',onConfirm:()=>{if(!adminOnly())return;delete m.reservationId;closeModal();toast('Incident link removed.','success');render();}});}
+    function cmTimeline(c,mine){const ev=[];const add=(date,title,detail='')=>{if(date&&Number.isFinite(Date.parse(date)))ev.push({date,title,detail});};add(c.joinedAt,'Customer record created');add(c.identification?.verifiedAt,'Identification verified');add(c.accountStatusAt,'Account status: '+(c.accountStatus||'active'),c.accountStatusReason||'');for(const r of mine){const label=getVehicle(r.vehicleId)?.name||r.vehicleId;add(r.createdAt,'Reservation submitted',label+' · '+r.id.toUpperCase());add(r.actualReturn,'Vehicle returned',label);for(const p of state.payments.filter(p=>p.reservationId===r.id)){add(p.submittedAt,'Payment proof submitted',fmtPHP(p.amount)+' · '+label);add(p.verifiedAt,'Payment verified',fmtPHP(p.amount));}}for(const a of state.activityLogs||[]){if((a.module==='Customers'&&a.entityId===c.id)||mine.some(r=>r.id===a.entityId))add(a.createdAt,a.action,a.module);}return `<div class="cm-timeline">${ev.sort((a,b)=>Date.parse(b.date)-Date.parse(a.date)).map(a=>`<div class="cm-timeline-item"><strong>${esc(a.title)}</strong><div class="small muted">${fmtDate(a.date,{time:true})}${a.detail?' · '+esc(a.detail):''}</div></div>`).join('')||'<div class="muted">No activity recorded.</div>'}</div>`;}
+    function renderAdminCustomerProfile(id,tab){if(!adminOnly())return;const c=getCustomer(id);if(!c)return mount('<div class="empty">Customer not found. <a href="#/admin/customers">Back to customers</a></div>');const m=customerMetrics(c),mine=m.mine.slice().sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)),d=c.identification||{},tabs=['overview','identification','rentals','payments','incidents','notes','activity'];tab=tabs.includes(tab)?tab:'overview';const route='#/admin/customer/'+esc(c.id),check=customerEligibility(c),eligible=check.every(x=>x[1]);let body='';
+        if(tab==='overview')body=`<div class="cm-profile"><div class="stack">${cmPanel('Personal information',`<div class="kv"><div class="k">Email</div><div class="v">${esc(c.email)}</div><div class="k">Phone</div><div class="v">${esc(c.phone)}</div><div class="k">Joined</div><div class="v">${fmtDateShort(c.joinedAt)}</div><div class="k">Account status</div><div class="v">${esc(c.accountStatus||'active')}</div></div>${c.accountStatusReason?`<p class="small muted mt-2">${esc(c.accountStatusReason)}</p>`:''}`)}${cmPanel('Driving credentials',`<div class="kv"><div class="k">Identity</div><div class="v">${identityBadge(c)}</div><div class="k">License</div><div class="v">${esc(getLicenseStatus(c).status)}</div><div class="k">Expires</div><div class="v">${esc(d.licenseExpiry||'Not submitted')}</div></div><a class="btn mt-3" href="${route}/identification">Review documents</a>`)}</div><div class="stack">${cmPanel('Rental eligibility',`<div class="callout ${eligible?'info':'danger'}"><strong>${eligible?'Eligible for review':'Review required'}</strong></div>${check.map(([label,pass])=>`<div class="cm-check"><span>${esc(label)}</span><span style="color:var(--${pass?'success':'danger'})">${pass?'Pass':'Needs review'}</span></div>`).join('')}<p class="small muted mt-2">Availability and validity through the return date are checked separately. Unresolved linked incidents require administrative review; association does not establish fault.</p>`)}${cmPanel('Outstanding overtime',`<strong style="font-size:22px">${fmtPHP(m.outstanding)}</strong><p class="small muted">Unsettled assessed overtime on completed rentals.</p><a class="btn mt-2" href="${route}/payments">View payments</a>`)}</div></div>`;
+        if(tab==='identification')body=cmPanel('Identification documents',`<div class="kv mb-3"><div class="k">ID type</div><div class="v">${esc(d.idType||'—')}</div><div class="k">ID number</div><div class="v">${esc(d.idNumber||'—')}</div><div class="k">License number</div><div class="v">${esc(d.licenseNumber||'—')}</div><div class="k">Expiry</div><div class="v">${esc(d.licenseExpiry||'—')}</div></div>${customerDocuments(c)}${d.rejectionReason?`<div class="callout danger mt-2">${esc(d.rejectionReason)}</div>`:''}${d.verificationStatus==='pending'?`<div class="stack mt-3"><label class="field"><span class="field-label">Rejection reason</span><input id="identityRejectReason" class="input"></label><div class="btn-group"><button class="btn btn-primary" onclick="App.reviewCustomerIdentity('${esc(id)}',true)">Verify identity</button><button class="btn btn-danger" onclick="App.reviewCustomerIdentity('${esc(id)}',false)">Reject identity</button></div></div>`:''}`);
+        if(tab==='rentals')body=cmPanel('Rental history',cmTable(['Motorcycle','Pickup','Return','Amount','Status',''],mine.map(r=>`<tr><td>${esc(getVehicle(r.vehicleId)?.name||r.vehicleId)}</td><td>${fmtDate(r.start,{time:true})}</td><td>${fmtDate(r.end,{time:true})}</td><td>${fmtPHP(r.totalFee+(r.overtimeFee||0))}</td><td>${statusBadge(r.status)}</td><td><a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}">View</a></td></tr>`)));
+        if(tab==='payments'){const ids=new Set(mine.map(r=>r.id));body=cmPanel('Payment records',cmTable(['Reservation','Type','Method','Amount','Status',''],state.payments.filter(p=>ids.has(p.reservationId)).map(p=>`<tr><td>${esc(p.reservationId.toUpperCase())}</td><td>${esc(p.paymentType||'rental')}</td><td>${esc(p.method)}</td><td>${fmtPHP(p.amount)}</td><td>${statusBadge(p.status)}</td><td><a class="btn btn-sm" href="#/admin/reservation/${esc(p.reservationId)}">View</a></td></tr>`)))+cmPanel('Unsettled overtime',cmTable(['Reservation','Amount','Status',''],mine.filter(r=>r.status==='completed'&&['unpaid','pending','rejected'].includes(overtimeStatus(r))).map(r=>`<tr><td>${esc(r.id.toUpperCase())}</td><td>${fmtPHP(r.overtimeFee)}</td><td>${esc(overtimeStatus(r))}</td><td><a class="btn btn-sm" href="#/admin/reservation/${esc(r.id)}">View</a></td></tr>`)));}
+        if(tab==='incidents'){const rentals=mine.filter(r=>['ongoing','completed'].includes(r.status));const candidates=state.maintenanceLogs.filter(x=>x.type==='incident'&&!x.reservationId&&rentals.some(r=>r.vehicleId===x.vehicleId));body=cmPanel('Linked rental incidents',cmTable(['Incident','Rental','Reported','Status','Actions'],customerIncidents(c).map(x=>`<tr><td>${esc(x.title)}</td><td>${esc(x.reservationId.toUpperCase())}</td><td>${fmtDateShort(x.reportedAt)}</td><td>${statusBadge(x.status)}</td><td><button class="btn btn-sm" onclick="App.viewMaintenance('${esc(x.id)}')">View</button> <button class="btn btn-sm" onclick="App.cmUnlinkIncident('${esc(id)}','${esc(x.id)}')">Remove link</button></td></tr>`)))+cmPanel('Link a documented incident',`<p class="small muted mb-2">Only link an incident when records confirm its association with this rental. Do not infer fault from a motorcycle match.</p>${candidates.length?`<form class="stack" onsubmit="App.cmLinkIncident(event,'${esc(id)}')"><label class="field"><span class="field-label">Incident</span><select name="incident" class="select">${candidates.map(x=>`<option value="${esc(x.id)}">${esc(x.title)} · ${esc(getVehicle(x.vehicleId)?.name||x.vehicleId)} · ${fmtDateShort(x.reportedAt)}</option>`).join('')}</select></label><label class="field"><span class="field-label">Rental</span><select name="reservation" class="select">${rentals.map(r=>`<option value="${esc(r.id)}">${esc(r.id.toUpperCase())} · ${esc(getVehicle(r.vehicleId)?.name||r.vehicleId)} · ${fmtDateShort(r.start)}</option>`).join('')}</select></label><label><input type="checkbox" name="confirm" required> I have checked the records and confirmed this association.</label><button class="btn btn-primary">Link incident</button></form>`:'<p class="muted small">No unlinked incident records for motorcycles in this customer’s ongoing or completed rentals.</p>'}`);}
+        if(tab==='notes')body=cmPanel('Internal admin notes',`<form class="stack" onsubmit="App.cmSaveNote(event,'${esc(id)}')"><textarea class="input" name="note" required maxlength="1000" placeholder="Add a factual operational note…"></textarea><button class="btn btn-primary">Save note</button></form><div class="stack mt-3">${(c.adminCustomerNotes||[]).map(n=>`<div class="callout"><div class="small muted">Admin · ${fmtDate(n.createdAt,{time:true})}</div><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(n.text)}</div></div>`).join('')||'<p class="small muted">No internal notes.</p>'}</div>`);
+        if(tab==='activity')body=cmPanel('Customer activity',cmTimeline(c,mine));
+        mount(`${customerModuleStyle()}<a class="btn btn-ghost btn-sm mb-3" href="#/admin/customers">← Back to customers</a><div class="page-header cm-heading">${customerAvatar(c)}<div><h1 class="page-title">${esc(c.name)}</h1><p class="page-desc">${esc(c.id.toUpperCase())} · Member since ${fmtDateShort(c.joinedAt)}</p>${identityBadge(c)}</div><div class="btn-group"><button class="btn" onclick="App.editCustomerIdentity('${esc(id)}')">Edit profile</button><button class="btn" onclick="App.cmStatusModal('${esc(id)}')">Account status</button></div></div>${cmStats([['Total reservations',m.count],['Completed rentals',m.completed],['Total spent (verified net)',fmtPHP(m.spent)],['Outstanding overtime',fmtPHP(m.outstanding)]])}<nav class="cm-tabs" aria-label="Customer profile sections">${tabs.map(t=>`<a class="btn btn-sm ${t===tab?'active':''}" href="${route}/${t}">${({rentals:'Rental history',identification:'Identification',overview:'Overview',payments:'Payments',incidents:'Incidents',notes:'Notes',activity:'Activity'})[t]}</a>`).join('')}</nav><div class="stack">${body}</div>`);
     }
     // ---------- Modal renderers ----------
     function openVehicleModal(id) {
@@ -1775,14 +2236,14 @@ function renderAdminVehicles() {
         }
     }
 
-    function openMaintenanceModal(id) {
+    function openMaintenanceModal(id, vehicleId = null) {
         if (state.role !== 'admin') return;
         const log = id ? state.maintenanceLogs.find(item => item.id === id) : null;
         if (id && !log) return;
         photoDraft = log ? maintenancePhotos(log).slice() : [];
         openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">${log ? 'Edit log' : 'Log maintenance or incident'}</div><button class="icon-btn" onclick="App.closeModal()" aria-label="Close">&times;</button></div>
           <form onsubmit="App.saveMaintenance(event, '${id || ''}')"><div class="modal-body stack">
-            <div class="field"><label class="field-label">Vehicle</label><select name="vehicleId" class="select" required>${state.vehicles.map(v => `<option value="${v.id}" ${log?.vehicleId === v.id ? 'selected' : ''}>${esc(v.name)} (${esc(v.plateNumber)})</option>`).join('')}</select></div>
+            <div class="field"><label class="field-label">Vehicle</label><select name="vehicleId" class="select" required>${state.vehicles.map(v => `<option value="${v.id}" ${(log?.vehicleId || vehicleId) === v.id ? 'selected' : ''}>${esc(v.name)} (${esc(v.plateNumber)})</option>`).join('')}</select></div>
             <div class="form-grid">
               <div class="field"><label class="field-label">Type</label><select name="type" class="select"><option value="maintenance" ${log?.type === 'maintenance' ? 'selected' : ''}>Maintenance</option><option value="incident" ${log?.type === 'incident' ? 'selected' : ''}>Incident</option></select></div>
               <div class="field"><label class="field-label">Cost (PHP)</label><input name="cost" type="number" min="0" step="0.01" class="input" required value="${Number(log?.cost || 0)}"></div>
@@ -1870,7 +2331,7 @@ function renderAdminVehicles() {
         if (!file || !['image/jpeg','image/png','image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) return toast('Select a JPG, PNG or WEBP image up to 5 MB.', 'error');
         const existing = getPaymentByReservation(id, 'overtime');
         if (existing?.proofDataUrl?.startsWith('blob:')) URL.revokeObjectURL(existing.proofDataUrl);
-        const values = { reservationId:id, paymentType:'overtime', method:form.elements.namedItem('method').value, amount:r.overtimeFee, proofDataUrl:URL.createObjectURL(file), status:'pending', submittedAt:new Date().toISOString(), verifiedBy:null, verifiedAt:null, rejectReason:'' };
+        const values = { reservationId:id, paymentType:'overtime', method:form.elements.namedItem('method').value, amount:r.overtimeFee, proofDataUrl:URL.createObjectURL(file), status:'pending', submittedAt:new Date().toISOString(), verifiedBy:null, verifiedAt:null, referenceNumber:'', rejectReason:'' };
         if (existing) Object.assign(existing, values);
         else state.payments.unshift({id:uid('p'), ...values});
         if (r.overtime) r.overtime.paymentStatus = 'pending';
@@ -2096,20 +2557,6 @@ function renderAdminVehicles() {
         <div class="field"><label class="field-label">Final cost (PHP)</label><input name="cost" type="number" min="0" class="input" value="${Number(l.cost || 0)}" required></div>
       </div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary">Mark resolved</button></div></form></div>`);
     }
-    function openPaymentModal(pid) {
-        const p = state.payments.find(x => x.id === pid);
-        if (!p)
-            return;
-        const r = getReservation(p.reservationId);
-        const v = r ? getVehicle(r.vehicleId) : null;
-        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Payment proof</div><button class="icon-btn" onclick="App.closeModal()" aria-label="Close">&times;</button></div>
-      <div class="modal-body stack">
-        <div class="kv"><div class="k">Customer</div><div class="v">${esc(r ? r.customerName : '—')}</div><div class="k">Vehicle</div><div class="v">${esc(v ? v.name : '—')}</div><div class="k">Method</div><div class="v">${esc(p.method)}</div><div class="k">Amount</div><div class="v">${fmtPHP(p.amount)}</div><div class="k">Status</div><div class="v">${statusBadge(p.status)}</div></div>
-        <div class="proof-preview" style="min-height:160px;">${p.proofDataUrl ? `<img src="${p.proofDataUrl}" alt="Payment proof" style="max-height:360px;">` : `<span class="muted small">Proof on file</span>`}</div>
-        ${p.rejectReason ? `<div class="callout danger small">Reason: ${esc(p.rejectReason)}</div>` : ''}
-      </div>
-      <div class="modal-footer">${p.status === 'pending' ? `<button class="btn btn-danger" onclick="App.openRejectPaymentModal('${p.id}')">Reject</button><button class="btn btn-primary" onclick="App.verifyPayment('${p.id}')">Verify payment</button>` : `<button class="btn" onclick="App.closeModal()">Close</button>`}</div></div>`);
-    }
     function canAccessCustomer(c) {
         return !!c && (state.role === 'admin' || (state.role === 'customer' && currentCustomer()?.id === c.id));
     }
@@ -2203,9 +2650,10 @@ function renderAdminVehicles() {
         const reason = approved ? '' : ($('#identityRejectReason')?.value || '').trim();
         if (!approved && !reason) return toast('Enter a rejection reason.','error');
         Object.assign(d,{verificationStatus:approved?'verified':'rejected', verifiedBy:approved?'Admin':null, verifiedAt:approved?new Date().toISOString():null,rejectionReason:reason});
-        render(); openCustomerModal(id); toast('Identity review saved.','success');
+        closeModal(); toast('Identity review saved.','success'); navigate('#/admin/customer/'+id+'/identification'); render();
     }
     function openCustomerModal(cid) {
+        if (adminOnly() && getCustomer(cid)) { closeModal(); navigate('#/admin/customer/'+cid+'/identification'); return; }
         const c = getCustomer(cid);
         if (!canAccessCustomer(c))
             return;
@@ -2266,17 +2714,13 @@ function renderAdminVehicles() {
         renderChrome();
     }
     function markAllRead() {
-        state.notifications.forEach(n => {
-            if (n.role === state.role)
-                n.isRead = true;
-        });
-        toast('All notifications marked as read.', 'success');
-        render();
+        notificationInbox().forEach(n=>{n.isRead=true;});
+        toast('All inbox notifications marked as read.', 'success');
+        ncRefresh();
     }
     function markNotifRead(id) {
-        const n = state.notifications.find(x => x.id === id);
-        if (n)
-            n.isRead = true;
+        const n = notificationInbox(true).find(n=>n.id===id);
+        if (n) n.isRead=true;
     }
     function updateFeePreview(vehicleId) {
         const form = $('#reqForm');
@@ -2338,6 +2782,7 @@ function renderAdminVehicles() {
         if (btn && btn.disabled) return;
         const cust = currentCustomer();
         if (!cust) { toast('No customer account selected.', 'error'); return; }
+        const restriction = customerRestriction(cust); if (restriction) return toast(restriction,'error');
         if (!bookingHasLicense(cust)) { toast('Upload your LTO license (Restriction Code A/A1) in Account before submitting.', 'error'); return; }
         const startVal = form.start.value, endVal = form.end.value;
         const deliveryMethod = form.deliveryMethod ? form.deliveryMethod.value : '';
@@ -2361,6 +2806,7 @@ function renderAdminVehicles() {
         const { total } = computeFee(vehicleId, start, end);
         const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod, trackingConsent: { accepted: true, at: new Date().toISOString() } };
         setTimeout(() => {
+            const restriction=customerRestriction(cust); if(restriction){if(btn)btn.disabled=false;return toast(restriction,'error');}
             state.reservations.unshift(r);
             notify('admin', 'New reservation request', `${cust.name} requested ${getVehicle(vehicleId)?.name || 'a vehicle'}.`, `#/admin/reservation/${r.id}`);
             toast('Request submitted. Please wait for admin approval. You will be notified.', 'success');
@@ -2434,7 +2880,7 @@ function renderAdminVehicles() {
         setTimeout(() => {
             const existing = getPaymentByReservation(reservationId);
             if (existing) {
-                Object.assign(existing, { method, amount, status: 'pending', submittedAt: new Date().toISOString(), proofDataUrl, rejectReason: '', verifiedBy: null });
+                Object.assign(existing, { method, amount, status: 'pending', submittedAt: new Date().toISOString(), proofDataUrl, referenceNumber:'', rejectReason: '', verifiedBy: null });
             }
             else {
                 state.payments.unshift({ id: uid('p'), reservationId, paymentType: 'rental', method, amount, proofEmoji: 'receipt', proofDataUrl, status: 'pending', submittedAt: new Date().toISOString(), verifiedBy: null, rejectReason: '' });
@@ -2449,11 +2895,13 @@ function renderAdminVehicles() {
         const r = getReservation(id);
         if (state.role !== 'admin' || !r || r.status !== 'pending') return;
         const customer = getCustomer(r.customerId);
+        const restriction = customerRestriction(customer); if (restriction) return toast(restriction,'error');
         if (!customer || identityStatus(customer) !== 'verified' || !identityComplete(customer.identification)) {
             toast('Verify the customer identity and valid license before approving.', 'error');
             if (customer) openCustomerModal(customer.id);
             return;
         }
+        if (getLicenseStatus(customer,r).status !== 'Valid') return toast('License must remain valid through the return date.','error');
         const conflict = hasConflict(r.vehicleId, r.start, r.end, r.id);
         if (conflict.conflict) {
             toast(conflict.reason, 'error');
@@ -2461,7 +2909,7 @@ function renderAdminVehicles() {
         }
         r.status = 'approved';
         r.approvedBy = 'Admin';
-        notify('customer', 'Reservation approved', `Your ${getVehicle(r.vehicleId)?.name || 'reservation'} was approved. You may now upload payment proof.`, '#/customer/reservations');
+        notify('customer', 'Reservation approved', `Your ${getVehicle(r.vehicleId)?.name || 'reservation'} was approved. You may now upload payment proof.`, `#/customer/reservation/${r.id}`, r.customerId);
         toast('Reservation approved.', 'success');
         render();
     }
@@ -2481,7 +2929,7 @@ function renderAdminVehicles() {
         r.status = 'rejected';
         r.rejectReason = reason;
         r.approvedBy = 'Admin';
-        notify('customer', 'Reservation rejected', `Your ${getVehicle(r.vehicleId)?.name || 'reservation'} was rejected.`, '#/customer/reservations');
+        notify('customer', 'Reservation rejected', `Your ${getVehicle(r.vehicleId)?.name || 'reservation'} was rejected.`, `#/customer/reservation/${r.id}`, r.customerId);
         closeModal();
         toast('Reservation rejected.', 'info');
         render();
@@ -2492,12 +2940,14 @@ function renderAdminVehicles() {
     }
     function startRental(id) {
         const r = getReservation(id);
-        if (!r || r.status !== 'approved')
+        if (!adminOnly() || !r || r.status !== 'approved')
             return;
+        const restriction=customerRestriction(getCustomer(r.customerId)); if(restriction)return toast(restriction,'error');
         openConfirm({ title: 'Start rental', body: `<p class="small muted">Mark this reservation as ongoing? The vehicle will be set to <strong>Rented</strong>.</p>`, confirmLabel: 'Start rental', onConfirm: () => {
                 closeModal();
+                if(!adminOnly())return; const restriction=customerRestriction(getCustomer(r.customerId)); if(restriction)return toast(restriction,'error');
                 const vehicle = getVehicle(r.vehicleId);
-                if (r.status !== 'approved' || !vehicle || ['maintenance', 'malfunction', 'rented'].includes(vehicle.status) || reservationsForVehicle(r.vehicleId).some(x => x.id !== r.id && x.status === 'ongoing')) {
+                if (r.status !== 'approved' || !vehicle || vehicleOperationalState(vehicle).condition !== 'available' || vehicleOperationalState(vehicle).service || reservationsForVehicle(r.vehicleId).some(x => x.id !== r.id && (x.status === 'ongoing' || (x.status === 'approved' && Date.parse(x.start) <= Date.now() && Date.now() < Date.parse(x.end))))) {
                     toast('Vehicle is not available for release.', 'error');
                     return;
                 }
@@ -2506,10 +2956,10 @@ function renderAdminVehicles() {
                     return;
                 }
                 r.status = 'ongoing';
+                r.startedAt = new Date().toISOString();
                 const v = getVehicle(r.vehicleId);
-                if (v)
-                    v.status = 'rented';
-                notify('customer', 'Rental started', `Your rental for ${v ? v.name : 'the vehicle'} is now ongoing.`, '#/customer/reservations');
+                if (v) syncVehicleStatus(v);
+                notify('customer', 'Rental started', `Your rental for ${v ? v.name : 'the vehicle'} is now ongoing.`, `#/customer/reservation/${r.id}`, r.customerId);
                 toast('Rental marked as ongoing.', 'success');
                 render();
             } });
@@ -2550,10 +3000,7 @@ function renderAdminVehicles() {
         r.overtimeFee = finalFee;
         r.overtime = { hours:ot.hours, ratePerHour:getVehicle(r.vehicleId)?.ratePerHour || 0, baseFee:ot.baseFee, cleaningFee:ot.cleaningFee, refuelingFee:ot.refuelingFee, calculatedFee:ot.fee, finalFee, tierLabel:ot.tierLabel, fullDayApplied:ot.fullDayApplied, adjustmentReason:reason, assessedBy:'Admin', assessedAt:new Date().toISOString(), paymentStatus:finalFee > 0 ? 'unpaid' : 'not_applicable' };
         const v = getVehicle(r.vehicleId);
-        if (v && v.status === 'rented') {
-            const openLogs = state.maintenanceLogs.filter(log => log.vehicleId === v.id && log.status === 'open');
-            v.status = openLogs.some(log => log.type === 'incident') ? 'malfunction' : openLogs.length ? 'maintenance' : 'available';
-        }
+        if (v) syncVehicleStatus(v);
         const cust = getCustomer(r.customerId);
         if (cust)
             cust.totalRentals = (cust.totalRentals || 0) + 1;
@@ -2561,30 +3008,6 @@ function renderAdminVehicles() {
         closeModal();
         toast('Rental completed.', 'success');
         render();
-    }
-    function verifyPayment(pid) {
-        if (state.role !== 'admin') return;
-        const p = state.payments.find(x => x.id === pid);
-        if (!p)
-            return;
-        if (p.status !== 'pending')
-            return;
-        openConfirm({ title: 'Verify payment', body: `<p class="small muted">Confirm that this payment proof has been checked and verified?</p>`, confirmLabel: 'Verify payment', onConfirm: () => {
-                if (state.role !== 'admin' || p.status !== 'pending') return;
-                const reservation = getReservation(p.reservationId);
-                if (p.paymentType === 'overtime' && (!reservation || p.amount !== reservation.overtimeFee)) return toast('Overtime amount does not match the charge.', 'error');
-                closeModal();
-                p.status = 'verified';
-                p.verifiedAt = new Date().toISOString();
-                if (p.paymentType === 'overtime' && reservation.overtime) reservation.overtime.paymentStatus = 'paid';
-                p.verifiedBy = 'Admin';
-                p.rejectReason = '';
-                const r = getReservation(p.reservationId);
-                if (r)
-                    notify('customer', p.paymentType === 'overtime' ? 'Overtime payment verified' : 'Payment verified', `Your payment for ${getVehicle(r.vehicleId)?.name || 'your reservation'} has been verified.`, `#/customer/reservation/${r.id}`, r.customerId);
-                toast('Payment verified.', 'success');
-                render();
-            } });
     }
     function submitRejectPayment(e, pid) {
         e.preventDefault();
@@ -2612,25 +3035,29 @@ function renderAdminVehicles() {
     function rejectPayment(pid) {
         openRejectPaymentModal(pid);
     }
-    function changeVehicleStatus(id, status) {
-        const v = getVehicle(id);
-        if (!v || v.status === status)
-            return;
-        setVehicleStatus(id, status);
-    }
+    function changeVehicleStatus(id, status) { setVehicleStatus(id,status); }
     function setVehicleStatus(id, status) {
+        if (!adminOnly()) return;
         const v = getVehicle(id);
-        if (!v || !['available', 'rented', 'maintenance', 'malfunction'].includes(status))
-            return;
-        if (status === 'available' && (reservationsForVehicle(id).some(r => r.status === 'ongoing') || state.maintenanceLogs.some(l => l.vehicleId === id && l.status === 'open'))) {
-            toast('Resolve active rentals or maintenance before marking available.', 'error');
+        const order = ['available','maintenance','malfunction'];
+        if (!v || !order.includes(status)) return;
+        const f = vehicleOperationalState(v);
+        const record = vehicleRecordCondition(v);
+        const minimum = record === 'malfunction' ? 'malfunction' : record === 'maintenance' || f.service ? 'maintenance' : 'available';
+        if (order.indexOf(status) < order.indexOf(minimum)) {
+            toast('Resolve the open maintenance/incident records or complete the active service before lowering this condition.', 'error');
             render();
             return;
         }
-        v.status = status;
-        toast(`${v.name} status updated to ${status}.`, 'success');
+        // If a record already supplies the selected condition, remove the separate override.
+        // Do not resolve records or change rental occupancy through this dropdown.
+        v.manualCondition = status === minimum ? 'available' : status;
+        const updated = syncVehicleStatus(v);
+        const effective = updated.condition !== 'available' ? updated.condition : updated.service ? 'maintenance' : 'available';
+        toast(`${v.name}: ${effective === 'available' ? 'Serviceable' : effective.charAt(0).toUpperCase() + effective.slice(1)}.`, 'success');
         render();
     }
+
     function saveVehicle(e, id) {
         e.preventDefault();
         const f = e.target;
@@ -2667,7 +3094,7 @@ function renderAdminVehicles() {
             toast('Vehicle updated.', 'success');
         }
         else {
-            state.vehicles.unshift({ id: uid('v'), status: 'available', imageEmoji: '', ...data });
+            state.vehicles.unshift({ id: uid('v'), status: 'available', manualCondition:'available', imageEmoji: '', ...data });
             toast('Vehicle added.', 'success');
         }
         closeModal();
@@ -2675,13 +3102,7 @@ function renderAdminVehicles() {
     }
     function refreshMaintenanceStatus(vehicleId) {
         const vehicle = getVehicle(vehicleId);
-        if (!vehicle) return;
-        const open = state.maintenanceLogs.filter(log => log.vehicleId === vehicleId && log.status === 'open');
-        if (open.some(log => log.type === 'incident')) vehicle.status = 'malfunction';
-        else if (open.length) vehicle.status = 'maintenance';
-        else if (['maintenance', 'malfunction'].includes(vehicle.status)) {
-            vehicle.status = reservationsForVehicle(vehicleId).some(r => r.status === 'ongoing') ? 'rented' : 'available';
-        }
+        if (vehicle) syncVehicleStatus(vehicle);
     }
 
     function saveMaintenance(e, id) {
@@ -2748,11 +3169,11 @@ function renderAdminVehicles() {
     state.opsServices = state.opsServices || [];
     const auditFields = {
         opsServices: ['vehicleId','title','start','end','status','cost','resolvedAt'],
-        vehicles: ['name','brand','model','year','plateNumber','displacement','ratePerDay','ratePerHour','status','color','seats','transmission','odometer','serviceDueDate','serviceDueMileage'],
+        vehicles: ['name','brand','model','year','plateNumber','displacement','ratePerDay','ratePerHour','status','manualCondition','color','seats','transmission','odometer','serviceDueDate','serviceDueMileage'],
         reservations: ['vehicleId','customerId','start','end','actualReturn','status','totalFee','overtimeFee','deliveryMethod','approvedBy','rejectReason','cancelReason','adminNotes'],
         payments: ['reservationId','paymentType','method','amount','status','submittedAt','verifiedAt','verifiedBy','rejectReason'],
-        maintenanceLogs: ['vehicleId','type','title','description','damageLocation','status','cost','reportedAt','resolvedAt','resolutionNotes','resolvedBy'],
-        customers: ['totalRentals']
+        maintenanceLogs: ['vehicleId','reservationId','type','title','description','damageLocation','status','cost','reportedAt','resolvedAt','resolutionNotes','resolvedBy'],
+        customers: ['totalRentals','accountStatus','accountStatusReason','accountStatusAt']
     };
     const auditModules = {opsServices:'Maintenance',vehicles:'Vehicles',reservations:'Reservations',payments:'Payments',maintenanceLogs:'Maintenance',customers:'Customers'};
     function auditSnapshot() {
@@ -2784,6 +3205,7 @@ function renderAdminVehicles() {
         return result;
     }
     state.activityLogs = state.activityLogs || [];
+    syncVehicleStatuses();
     let auditBaseline = auditSnapshot();
     function logActivity(entry, actorRole = state.role, actorId = state.currentCustomerId) {
         const isAssistant = actorRole === 'assistant' || String(entry?.actorName || '').startsWith('AI Assistant');
@@ -2795,6 +3217,7 @@ function renderAdminVehicles() {
     }
 
     function captureActivity(actorRole = state.role, actorId = state.currentCustomerId) {
+        syncVehicleStatuses();
         const next = auditSnapshot();
         for (const key of new Set([...auditBaseline.keys(), ...next.keys()])) {
             const before = auditBaseline.get(key), after = next.get(key), item = after || before;
@@ -2854,7 +3277,8 @@ function renderAdminVehicles() {
         if (!f || !box) return;
         const a=calendarISO(f.start.value), b=calendarISO(f.end.value);
         const fee=computeFee(f.vehicleId.value,a,b);
-        box.textContent=fee.days ? `${fee.days} rental day(s) · ${fmtPHP(fee.total)}` : 'Select a valid rental period.';
+        const risk = reservationsForVehicle(f.vehicleId.value).some(r => rentalIsOverdue(r));
+        box.textContent=fee.days ? `${fee.days} rental day(s) · ${fmtPHP(fee.total)}${risk ? ' · Previous rental awaiting return; confirm vehicle readiness before release.' : ''}` : 'Select a valid rental period.';
     }
     function saveCalendarReservation(e,id) {
         e.preventDefault(); if (!adminOnly()) return;
@@ -2862,6 +3286,7 @@ function renderAdminVehicles() {
         if (id && !calendarReservationEditable(r)) return toast('Reservation cannot be edited.','error');
         const c=getCustomer(r?.customerId || f.customerId.value), v=getVehicle(f.vehicleId.value), start=calendarISO(f.start.value), end=calendarISO(f.end.value);
         if (!c || !v || !start || !end || Date.parse(end)<=Date.parse(start) || Date.parse(start)<Date.now() || !DELIVERY_METHODS.includes(f.deliveryMethod.value) || !f.consent.checked) return toast('Check customer, motorcycle, future pickup/return times, delivery method and consent.','error');
+        const restriction=customerRestriction(c); if(restriction)return toast(restriction,'error');
         if (!bookingHasLicense(c) || getLicenseStatus(c,{end}).status !== 'Valid') return toast('Customer needs a valid license on file through the return date.','error');
         if (state.reservations.some(x=>x.customerId===c.id && x.status==='completed' && ['unpaid','pending','rejected'].includes(overtimeStatus(x)))) return toast('Customer must settle outstanding overtime first.','error');
         const conflict=hasConflict(v.id,start,end,id);
@@ -2876,17 +3301,12 @@ function renderAdminVehicles() {
         if (!adminOnly()) return;
         const r=getReservation(id); if (!r) return;
         const edit=calendarReservationEditable(r);
-        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Reservation details</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><div class="modal-body stack"><div>${statusBadge(r.status)}</div><div class="kv"><div class="k">Customer</div><div class="v">${esc(r.customerName)}</div><div class="k">Motorcycle</div><div class="v">${esc(getVehicle(r.vehicleId)?.name || r.vehicleId)}</div><div class="k">Pickup</div><div class="v">${fmtDate(r.start,{time:true})}</div><div class="k">Return</div><div class="v">${fmtDate(r.end,{time:true})}</div><div class="k">Rental fee</div><div class="v">${fmtPHP(r.totalFee)}</div></div>${!edit&&['pending','approved'].includes(r.status)?'<p class="small muted">Payment already submitted. Manage this booking through its reservation record.</p>':''}</div><div class="modal-footer"><a class="btn" href="#/admin/reservation/${esc(id)}" onclick="App.closeModal()">Full details</a>${edit?`<button class="btn btn-danger" onclick="App.cancelCalendarReservation('${esc(id)}')">Cancel reservation</button><button class="btn btn-primary" onclick="App.openCalendarReservation('','','${esc(id)}')">Edit / reschedule</button>`:''}</div></div>`);
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Reservation details</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><div class="modal-body stack"><div>${statusBadge(r.status)} ${rentalIsOverdue(r)?'<span class="status status-rejected">Overdue</span>':''}</div><div class="kv"><div class="k">Customer</div><div class="v">${esc(r.customerName)}</div><div class="k">Motorcycle</div><div class="v">${esc(getVehicle(r.vehicleId)?.name || r.vehicleId)}</div><div class="k">Pickup</div><div class="v">${fmtDate(r.start,{time:true})}</div><div class="k">Return</div><div class="v">${fmtDate(r.end,{time:true})}</div><div class="k">Rental fee</div><div class="v">${fmtPHP(r.totalFee)}</div></div>${!edit&&['pending','approved'].includes(r.status)?'<p class="small muted">Payment already submitted. Manage this booking through its reservation record.</p>':''}</div><div class="modal-footer"><a class="btn" href="#/admin/reservation/${esc(id)}" onclick="App.closeModal()">Full details</a>${edit?`<button class="btn btn-danger" onclick="App.cancelCalendarReservation('${esc(id)}')">Cancel reservation</button><button class="btn btn-primary" onclick="App.openCalendarReservation('','','${esc(id)}')">Edit / reschedule</button>`:''}</div></div>`);
     }
     function cancelCalendarReservation(id) {
         if (!adminOnly()) return;
         const r=getReservation(id); if (!calendarReservationEditable(r)) return;
         openConfirm({title:'Cancel reservation?',body:'The record will be retained in Rental History.',confirmLabel:'Cancel reservation',danger:true,onConfirm:()=>{if(!adminOnly()||!calendarReservationEditable(r))return;r.status='cancelled';r.cancelReason='Cancelled by administrator via Fleet Schedule';notify('customer','Reservation cancelled',r.cancelReason,'#/customer/history',r.customerId);closeModal();toast('Reservation cancelled.','success');render();}});
-    }
-    function servicePlanningHTML() {
-        const plans=state.vehicles.map(v=>{const date=v.serviceDueDate||'', km=v.serviceDueMileage; const overdue=(date&&date<=todayKey())||(km!=null&&v.odometer!=null&&v.odometer>=km);const soon=(date&&Date.parse(date+'T00:00:00+08:00')-Date.parse(todayKey()+'T00:00:00+08:00')<=7*86400000)||(km!=null&&v.odometer!=null&&km-v.odometer<=500);return `<tr><td><div class="cell-main">${esc(v.name)}</div><div class="cell-sub">${esc(v.plateNumber)}</div></td><td>${v.odometer==null?'—':esc(v.odometer)+' km'}</td><td>${date?esc(date):'—'}</td><td>${km==null?'—':esc(km)+' km'}</td><td>${!date&&km==null?'Not configured':overdue?'<span class="status status-malfunction">Due</span>':soon?'<span class="status status-pending">Approaching due</span>':'Not due'}</td><td><button class="btn btn-sm" onclick="App.openServicePlan('${esc(v.id)}')">Service plan</button> <button class="btn btn-sm" onclick="App.openServiceModal('${esc(v.id)}','${todayKey()}')">Schedule service</button></td></tr>`;}).join('');
-        const services=state.opsServices.slice().sort((a,b)=>Date.parse(a.start)-Date.parse(b.start));
-        return `<div class="panel mb-3"><div class="panel-header"><div class="panel-title">Preventive maintenance plans</div></div><div class="panel-body flush"><div class="table-wrap"><table class="table"><thead><tr><th>Motorcycle</th><th>Odometer</th><th>Next service date</th><th>Next service mileage</th><th>Due status</th><th>Actions</th></tr></thead><tbody>${plans}</tbody></table></div></div></div><div class="panel mb-3"><div class="panel-header"><div class="panel-title">Scheduled maintenance</div><button class="btn btn-sm btn-primary" onclick="App.openServiceModal()">Schedule service</button></div><div class="panel-body flush"><div class="table-wrap"><table class="table"><thead><tr><th>Motorcycle</th><th>Service</th><th>Period</th><th>Status</th><th>Cost</th><th>Actions</th></tr></thead><tbody>${services.map(m=>`<tr><td>${esc(getVehicle(m.vehicleId)?.name||m.vehicleId)}</td><td>${esc(m.title)}</td><td>${fmtDate(m.start,{time:true})} – ${fmtDate(m.end,{time:true})}</td><td>${statusBadge(m.status)}</td><td>${m.cost==null?'—':fmtPHP(m.cost)}</td><td>${m.status==='scheduled'?`<button class="btn btn-sm" onclick="App.openServiceModal('${esc(m.vehicleId)}','','${esc(m.id)}')">Manage</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">No scheduled maintenance.</td></tr>'}</tbody></table></div></div></div>`;
     }
     function openServicePlan(id) {
         if (!adminOnly()) return; const v=getVehicle(id);if(!v)return;
@@ -2907,7 +3327,7 @@ function renderAdminVehicles() {
         e.preventDefault();if(!adminOnly())return;const f=e.target.elements,m=id?state.opsServices.find(x=>x.id===id):null;if(id&&(!m||m.status!=='scheduled'))return;
         const v=getVehicle(f.vehicleId.value),start=calendarISO(f.start.value),end=calendarISO(f.end.value),title=f.title.value.trim();
         if(!v||!title||!start||!end||Date.parse(end)<=Date.parse(start)||Date.parse(end)<=Date.now())return toast('Check service title and dates.','error');
-        if(state.reservations.some(r=>r.vehicleId===v.id&&['approved','ongoing'].includes(r.status)&&overlaps(start,end,r.start,r.end))||state.opsServices.some(x=>x.id!==id&&x.vehicleId===v.id&&x.status==='scheduled'&&overlaps(start,end,x.start,x.end)))return toast('Service conflicts with a confirmed rental or another scheduled service.','error');
+        if(state.reservations.some(r=>r.vehicleId===v.id&&['approved','ongoing'].includes(r.status)&&reservationOccupies(r,start,end))||state.opsServices.some(x=>x.id!==id&&x.vehicleId===v.id&&x.status==='scheduled'&&overlaps(start,end,x.start,x.end)))return toast('Service conflicts with a confirmed rental or another scheduled service.','error');
         const data={vehicleId:v.id,title,start,end,status:'scheduled'};if(m)Object.assign(m,data);else state.opsServices.push({id:uid('svc'),...data,cost:null});closeModal();toast('Service scheduled.','success');render();
     }
     function finishService(id,status,costValue) {
@@ -2930,26 +3350,36 @@ function renderAdminVehicles() {
         const windowEnd = new Date(base + days * OPS_DAY).toISOString();
         const shift = (n) => toManilaDateKey(new Date(base + n * OPS_DAY).toISOString());
         const fleet = state.vehicles.filter(v => filter === 'all' || v.id === filter);
-        const visibleReservations = state.reservations.filter(r => fleet.some(v => v.id === r.vehicleId) && ['pending','approved','ongoing','completed'].includes(r.status) && overlaps(dates[0], windowEnd, r.start, r.actualReturn || r.end));
+        const now = Date.now();
+        const today = todayKey();
+        const todayEnd = new Date(Date.parse(today+'T00:00:00+08:00')+OPS_DAY).toISOString();
+        const displayEnd = r => rentalIsOverdue(r, now) ? todayEnd : reservationOccupancyEnd(r, now);
+        const visibleReservations = state.reservations.filter(r => fleet.some(v => v.id === r.vehicleId) && ['pending','approved','ongoing','completed'].includes(r.status) && overlaps(dates[0], windowEnd, r.start, displayEnd(r)));
         const visibleServices = (state.opsServices || []).filter(m => fleet.some(v => v.id === m.vehicleId) && m.status === 'scheduled' && overlaps(dates[0], windowEnd, m.start, m.end));
         const rows = fleet.map(v => {
+            const overdueRental = reservationsForVehicle(v.id).find(r => rentalIsOverdue(r, now));
             const cells = dates.map(d => {
                 const key = toManilaDateKey(d);
                 const cellEnd = new Date(Date.parse(d) + OPS_DAY).toISOString();
-                const rs = kind !== 'service' ? visibleReservations.filter(r => r.vehicleId === v.id && overlaps(d, cellEnd, r.start, r.actualReturn || r.end)) : [];
+                const occupying = visibleReservations.filter(r => r.vehicleId === v.id && overlaps(d, cellEnd, r.start, displayEnd(r)));
+                const hold = !!overdueRental && key === today;
+                const rs = kind !== 'service' ? occupying : [];
                 const ms = kind !== 'rental' ? visibleServices.filter(m => m.vehicleId === v.id && overlaps(d, cellEnd, m.start, m.end)) : [];
-                const down = (state.maintenanceLogs || []).some(m => m.vehicleId === v.id && m.status === 'open' && Date.parse(m.reportedAt) <= Date.parse(cellEnd) && Date.parse(m.resolvedAt || '9999-12-31T23:59:59Z') >= Date.parse(d));
+                const cellLogs = (state.maintenanceLogs || []).filter(m => m.vehicleId === v.id && m.status === 'open' && Date.parse(m.reportedAt) < Date.parse(cellEnd) && Date.parse(m.resolvedAt || '9999-12-31T23:59:59Z') > Date.parse(d));
+                const manual = key >= today ? manualVehicleCondition(v) : 'available';
+                const down = manual === 'malfunction' || cellLogs.some(m=>m.type === 'incident') ? 'Malfunction' : manual === 'maintenance' || cellLogs.length ? 'Maintenance' : '';
                 const events = rs.map(r => {
-                    const cls = r.status === 'pending' ? 'ops-pending' : r.status === 'completed' ? 'ops-completed' : 'ops-approved';
-                    return `<button type="button" class="ops-event ${cls}" onclick="App.openCalendarEvent('${esc(r.id)}')" title="${esc(r.id.toUpperCase() + ' ' + r.customerName)}">${esc(r.customerName.split(' ')[0])} <small>${esc(r.status)}</small></button>`;
+                    const late = rentalIsOverdue(r, now) && Date.parse(cellEnd) > Date.parse(r.end);
+                    const cls = late ? 'ops-service' : r.status === 'pending' ? 'ops-pending' : r.status === 'completed' ? 'ops-completed' : 'ops-approved';
+                    return `<button type="button" class="ops-event ${cls}" onclick="App.openCalendarEvent('${esc(r.id)}')" title="${esc(r.id.toUpperCase() + ' ' + r.customerName + (late ? ' · Overdue since ' + fmtDate(r.end,{time:true}) + ' · Awaiting return' : ''))}">${esc(r.customerName.split(' ')[0])} <small>${late?'Overdue':esc(r.status)}</small></button>`;
                 }).concat(ms.map(m => `<button type="button" class="ops-event ops-service" onclick="App.openServiceModal('${esc(m.vehicleId)}','${key}','${esc(m.id)}')" title="${esc(m.title||'Service')}">Service <small>${esc(m.status)}</small></button>`));
-                return `<td class="${toManilaDateKey(d)===todayKey()?'fleet-today':''}"><div class="fleet-cell">${events.join('')}${down && kind !== 'rental' ? '<span class="ops-event ops-service">Maintenance</span>' : ''}${key >= todayKey() ? `<button type="button" class="btn btn-sm btn-ghost" style="width:100%;margin-top:4px" onclick="App.openCalendarAdd('${esc(v.id)}','${key}')" aria-label="Add event for ${esc(v.name)} on ${key}">+ Add</button>` : (!events.length && !down ? '<span class="ops-free">-</span>' : '')}</div></td>`;
+                return `<td class="${key===today?'fleet-today':''}"><div class="fleet-cell">${events.join('')}${down && kind !== 'rental' ? `<span class="ops-event ${down === 'Malfunction' ? 'ops-service' : 'ops-pending'}">${down}</span>` : ''}${hold ? '<span class="small" style="color:var(--danger);display:block;margin-top:4px">Awaiting return</span>' : key >= today ? `<button type="button" class="btn btn-sm btn-ghost" style="width:100%;margin-top:4px" onclick="App.openCalendarAdd('${esc(v.id)}','${key}')" aria-label="Add event for ${esc(v.name)} on ${key}">+ Add</button>` : (!events.length && !down ? '<span class="ops-free">-</span>' : '')}</div></td>`;
             }).join('');
-            return `<tr><th scope="row"><div class="fleet-moto"><strong>${esc(v.brand + ' ' + v.name)}</strong><span class="muted small">${esc(v.plateNumber || '-')} · ${esc(v.status)}</span></div></th>${cells}</tr>`;
+            return `<tr><th scope="row"><div class="fleet-moto"><strong>${esc(v.brand + ' ' + v.name)}</strong><span class="muted small">${esc(v.plateNumber || '-')} · ${esc(vehicleOperationalState(v).status)}</span>${vehicleOperationalState(v).rented && vehicleOperationalState(v).condition !== 'available' ? statusBadge(vehicleOperationalState(v).condition, true) : ''}${overdueRental?`<span class="status status-rejected" style="align-self:flex-start;margin-top:4px">Overdue</span><span class="small muted">Due ${esc(fmtDate(overdueRental.end,{time:true}))}</span>`:''}</div></th>${cells}</tr>`;
         });
         mount(`
             <div class="page-header">
-              <div><h1 class="page-title">Fleet schedule</h1><p class="page-desc">Click + Add on a motorcycle and date to create a reservation or schedule service. Click an event to manage it. Manila time.</p></div><button class="btn btn-primary" onclick="App.openCalendarAdd()">+ Add event</button>
+              <div><h1 class="page-title">Fleet schedule</h1><p class="page-desc">Click + Add on a motorcycle and date to create a reservation or schedule service. Click an event to manage it. Overdue rentals are shown through today. Future dates can be booked; release requires the previous rental to be completed. Manila time.</p></div><button class="btn btn-primary" onclick="App.openCalendarAdd()">+ Add event</button>
             </div>
             <div class="metrics mb-3">
               <div class="metric"><div class="metric-label">Pending requests</div><div class="metric-value">${visibleReservations.filter(r=>r.status==='pending').length}</div></div>
@@ -2967,7 +3397,7 @@ function renderAdminVehicles() {
               <select class="select" aria-label="Event filter" onchange="App.setUI('fleetKind',this.value);App.render()">${[['all','All events'],['rental','Reservations'],['service','Service']].map(([k,l])=>`<option value="${k}" ${kind===k?'selected':''}>${l}</option>`).join('')}</select>
             </div>
             <div class="panel ops-calendar"><div class="table-wrap"><table class="table ops-fleet-table fleet-interactive" style="--fleet-days:${days}"><thead><tr><th scope="col">Motorcycle</th>${dates.map(d=>`<th scope="col" class="${toManilaDateKey(d)===todayKey()?'fleet-today':''}">${esc(new Date(d).toLocaleDateString('en-PH',{timeZone:'Asia/Manila',weekday:'short'}))}<strong>${esc(new Date(d).toLocaleDateString('en-PH',{timeZone:'Asia/Manila',month:'short',day:'numeric'}))}</strong></th>`).join('')}</tr></thead><tbody>${rows.join('') || '<tr><td colspan="'+(days+1)+'"><div class="empty">No motorcycles match this filter.</div></td></tr>'}</tbody></table></div></div>
-            <div class="ops-legend mt-3"><span><i class="fleet-key ops-pending"></i>Pending</span><span><i class="fleet-key ops-approved"></i>Approved / ongoing</span><span><i class="fleet-key ops-completed"></i>Completed</span><span><i class="fleet-key ops-service"></i>Service / maintenance</span></div>
+            <div class="ops-legend mt-3"><span><i class="fleet-key ops-pending"></i>Pending</span><span><i class="fleet-key ops-approved"></i>Approved / ongoing</span><span><i class="fleet-key ops-completed"></i>Completed</span><span><i class="fleet-key ops-service"></i>Overdue / service / maintenance</span></div>
         `);
     }
 
@@ -3004,9 +3434,10 @@ function renderAdminVehicles() {
 
     // ---------- Wiring ----------
     window.App = {
-        filterActivity, viewActivity, exportActivity,
+        filterActivity, viewActivity, exportActivity, dashboardLink, finFilter, finExportPayments, finVerify, finDepositModal, finSaveDeposit, reportExport, reportRangeChange,
+        cmFilter, cmPage, cmAddCustomer, cmSaveCustomer, cmExport, cmStatusModal, cmSaveStatus, cmSaveNote, cmLinkIncident, cmUnlinkIncident, customerRestriction, customerEligibility,
         openCalendarAdd, openCalendarReservation, saveCalendarReservation, openCalendarEvent, cancelCalendarReservation, openServiceModal, saveService, finishService, openServicePlan, saveServicePlan, updateCalendarEstimate,
-        loginAs, switchRole, goHome, setUI, searchVehicles, render, toggleNotifications, closeNotifications, markAllRead, markNotifRead,
+        loginAs, switchRole, goHome, setUI, searchVehicles, render, toggleNotifications, closeNotifications, markAllRead, markNotifRead, ncView, ncSearch, ncReset, ncRead, ncArchive, ncOpen, ncViewAll,
         scrollLandingTo, toggleLandingMenu, dismissLandingBanner, getLandingPromos, getFeaturedLandingVehicles, renderLanding,
         updateFeePreview, submitReservation, confirmCancelReservation, submitCancelReservation, customerCancel,
         previewProof, submitPayment,
@@ -3014,11 +3445,11 @@ function renderAdminVehicles() {
         startRental, openCompleteModal, completeRental, updateOvertimePreview, openOvertimePayment, submitOvertimePayment,
         openPaymentModal, verifyPayment, rejectPayment, openRejectPaymentModal, submitRejectPayment, switchVehicleSlide,
         openVehicleModal, saveVehicle, setVehicleStatus, changeVehicleStatus,
-        openMaintenanceModal, saveMaintenance, viewMaintenance, addMaintenancePhotos, removeMaintenancePhoto, resolveLog, openResolveLogModal, submitResolveLog,
+        openMaintenanceHistory, openMaintenanceModal, saveMaintenance, viewMaintenance, addMaintenancePhotos, removeMaintenancePhoto, resolveLog, openResolveLogModal, submitResolveLog,
         saveAdminNotes, openCustomerModal, editCustomerIdentity, saveCustomerIdentity, reviewCustomerIdentity, closeModal, _confirm: null,
         // Exposed for automated tests and inspection (no UI behavior change)
         DELIVERY_METHODS, getDeliveryMethod, getOvertimeSettings, overlaps, computeFee, computeOvertime, computeEarlyRefund, hasConflict, openRefundSelection, openAssessRefund, assessRefund, openRefundModal, recordRefund, acknowledgeRefund,
-        getVehicle, getReservation, getCustomer, currentCustomer, reservationsForVehicle, notify, logActivity, captureActivity, uid,
+        getVehicle, getReservation, getCustomer, currentCustomer, reservationsForVehicle, notify, logActivity, captureActivity, uid, vehicleOperationalState, syncVehicleStatuses, rentalIsOverdue, reservationOccupies,
         getTrackedVehicles: (...a)=>App.Tracking?.getTrackedVehicles?.(...a), isOverdue: (...a)=>App.Tracking?.isOverdue?.(...a), isNoSignal: (...a)=>App.Tracking?.isNoSignal?.(...a), addPing: (...a)=>App.Tracking?.addPing?.(...a),
         getDepositAmount, getNextStepBanner, nextStepBannerHTML, recommendByBudget, rangeCrossesBlocked, buildFlatpickrDisable, bookingHasLicense, getLicenseStatus, openOvertimeRulesModal
     };
@@ -3037,7 +3468,3 @@ function renderAdminVehicles() {
         route();
     });
 })();
-
-
-
-
