@@ -1,3 +1,11 @@
+
+
+
+
+
+
+
+
 // V.E.R.A. Seed Data & State
 (function () {
   const today = new Date();
@@ -11,10 +19,10 @@
       Number(date.day) + offset, hour - 8)).toISOString();
   };
 
-  
-const vehicles = [
+  const vehicles = [
     {
         id: 'v1',
+        imageUrl: 'images/vehicles/zx4rr-2026-front-angle.jpg',
         name: 'ZX-4RR',
         displacement: '400',
         brand: 'Kawasaki',
@@ -24,14 +32,14 @@ const vehicles = [
         ratePerDay: 3500,
         ratePerHour: 150,
         status: 'available',
+        imageEmoji: '🏍️',
         color: 'Green and Blue',
-        imageUrl: 'images/vehicles/zx4rr-2026-side.jpg',
-        imageUrlAlt: 'images/vehicles/zx4rr-2026-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     },
     {
         id: 'v2',
+        imageUrl: 'images/vehicles/zx4rr-2027-front-angle.jpg',
         name: 'ZX-4RR',
         displacement: '400',
         brand: 'Kawasaki',
@@ -41,14 +49,14 @@ const vehicles = [
         ratePerDay: 3500,
         ratePerHour: 60,
         status: 'available',
+        imageEmoji: '🏍️',
         color: 'Black',
-        imageUrl: 'images/vehicles/zx4rr-2027-side.jpg',
-        imageUrlAlt: 'images/vehicles/zx4rr-2027-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     },
     {
         id: 'v3',
+        imageUrl: 'images/vehicles/cb650r-front-angle.jpg',
         name: 'CB650R',
         displacement: '600',
         brand: 'Honda',
@@ -58,14 +66,14 @@ const vehicles = [
         ratePerDay: 3500,
         ratePerHour: 55,
         status: 'rented',
+        imageEmoji: '🏍️',
         color: 'Black',
-        imageUrl: 'images/vehicles/cb650r-side.jpg',
-        imageUrlAlt: 'images/vehicles/cb650r-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     },
     {
         id: 'v4',
+        imageUrl: 'images/vehicles/zx6r-2025-front-angle.jpg',
         name: 'ZX-6R',
         displacement: '600',
         brand: 'Kawasaki',
@@ -75,14 +83,14 @@ const vehicles = [
         ratePerDay: 4300,
         ratePerHour: 140,
         status: 'available',
+        imageEmoji: '🏍️',
         color: 'Black',
-        imageUrl: 'images/vehicles/zx6r-2025-side.jpg',
-        imageUrlAlt: 'images/vehicles/zx6r-2025-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     },
     {
         id: 'v5',
+        imageUrl: 'images/vehicles/cbr650r-front-angle.jpg',
         name: 'CBR650R',
         displacement: '600',
         brand: 'Honda',
@@ -92,14 +100,14 @@ const vehicles = [
         ratePerDay: 4000,
         ratePerHour: 50,
         status: 'maintenance',
+        imageEmoji: '🏍️',
         color: 'Grand Prix Red',
-        imageUrl: 'images/vehicles/cbr650r-side.jpg',
-        imageUrlAlt: 'images/vehicles/cbr650r-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     },
     {
         id: 'v6',
+        imageUrl: 'images/vehicles/z1100-se-front-angle.jpg',
         name: 'Z1100 SE',
         displacement: '1000',
         brand: 'Kawasaki',
@@ -109,14 +117,14 @@ const vehicles = [
         ratePerDay: 4500,
         ratePerHour: 180,
         status: 'available',
+        imageEmoji: '🏍️',
         color: 'SE Colorway',
-        imageUrl: 'images/vehicles/z1100-se-side.jpg',
-        imageUrlAlt: 'images/vehicles/z1100-se-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     },
     {
         id: 'v7',
+        imageUrl: 'images/vehicles/zx10r-2025-front-angle.jpg',
         name: 'ZX-10R',
         displacement: '1000',
         brand: 'Kawasaki',
@@ -126,14 +134,12 @@ const vehicles = [
         ratePerDay: 6500,
         ratePerHour: 65,
         status: 'malfunction',
+        imageEmoji: '🏍️',
         color: 'Green, Yellow and White',
-        imageUrl: 'images/vehicles/zx10r-2025-side.jpg',
-        imageUrlAlt: 'images/vehicles/zx10r-2025-front-angle.jpg',
         seats: 2,
         transmission: 'Manual'
     }
 ];
-
 
   const customers = [
     { id: 'c1', name: 'Juan Dela Cruz', email: 'juan.delacruz@email.com', phone: '0917-123-4567', totalRentals: 5, joinedAt: '2025-03-12T08:00:00+08:00' },
