@@ -290,6 +290,9 @@
             case 'maintenance':
                 renderAdminMaintenance();
                 break;
+            case 'schedule':
+                renderAdminSchedule();
+                break;
             case 'reports':
                 renderAdminReports();
                 break;
@@ -310,6 +313,7 @@
               { href: '#/admin/map', label: 'Live Map' },
               { href: '#/admin/vehicles', label: 'Vehicles' },
               { href: '#/admin/reservations', label: 'Reservations' },
+              { href: '#/admin/schedule', label: 'Fleet Schedule' },
               { href: '#/admin/payments', label: 'Payments & Refunds' },
               { href: '#/admin/maintenance', label: 'Maintenance' },
               { href: '#/admin/reports', label: 'Reports' },
@@ -2596,6 +2600,69 @@ function renderAdminVehicles() {
         const q = (state.ui.auditQuery || '').toLowerCase();
         return state.activityLogs.filter(l => (!state.ui.auditModule || l.module === state.ui.auditModule) && (!state.ui.auditDate || toManilaDateKey(l.createdAt) === state.ui.auditDate) && (!state.ui.auditAction || l.action === state.ui.auditAction) && `${l.module} ${l.action} ${l.entityId} ${l.description} ${l.actorName}`.toLowerCase().includes(q));
     }
+    function adminOnly() { return state.role === 'admin'; }
+    function scheduleDateInputToISO(value, endOfDay=false) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value||''))) return null;
+        const iso = `${value}T${endOfDay ? '23:59:59' : '00:00:00'}+08:00`;
+        const d = new Date(iso);
+        return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+    }
+    function renderAdminSchedule() {
+        if (!adminOnly()) { navigate('#/'); return; }
+        const OPS_DAY = 86400000;
+        const raw = state.ui.opsScheduleStart || todayKey();
+        const baseDate = new Date(`${raw}T00:00:00+08:00`);
+        const base = Number.isFinite(baseDate.getTime()) ? baseDate.getTime() : Date.parse(`${todayKey()}T00:00:00+08:00`);
+        const start = toManilaDateKey(new Date(base).toISOString());
+        state.ui.opsScheduleStart = start;
+        const days = Number(state.ui.fleetDays) === 7 ? 7 : 14;
+        const filter = state.ui.fleetVehicle || 'all';
+        const kind = state.ui.fleetKind || 'all';
+        const dates = Array.from({ length: days }, (_, i) => new Date(base + i * OPS_DAY).toISOString());
+        const windowEnd = new Date(base + days * OPS_DAY).toISOString();
+        const shift = (n) => toManilaDateKey(new Date(base + n * OPS_DAY).toISOString());
+        const fleet = state.vehicles.filter(v => filter === 'all' || v.id === filter);
+        const visibleReservations = state.reservations.filter(r => fleet.some(v => v.id === r.vehicleId) && ['pending','approved','ongoing','completed'].includes(r.status) && overlaps(dates[0], windowEnd, r.start, r.actualReturn || r.end));
+        const visibleServices = (state.opsServices || []).filter(m => fleet.some(v => v.id === m.vehicleId) && m.status === 'scheduled' && overlaps(dates[0], windowEnd, m.start, m.end));
+        const rows = fleet.map(v => {
+            const cells = dates.map(d => {
+                const key = toManilaDateKey(d);
+                const cellEnd = new Date(Date.parse(d) + OPS_DAY).toISOString();
+                const rs = kind !== 'service' ? visibleReservations.filter(r => r.vehicleId === v.id && overlaps(d, cellEnd, r.start, r.actualReturn || r.end)) : [];
+                const ms = kind !== 'rental' ? visibleServices.filter(m => m.vehicleId === v.id && overlaps(d, cellEnd, m.start, m.end)) : [];
+                const down = (state.maintenanceLogs || []).some(m => m.vehicleId === v.id && m.status === 'open' && Date.parse(m.reportedAt) <= Date.parse(cellEnd) && Date.parse(m.resolvedAt || '9999-12-31T23:59:59Z') >= Date.parse(d));
+                const events = rs.map(r => {
+                    const cls = r.status === 'pending' ? 'ops-pending' : r.status === 'completed' ? 'ops-completed' : 'ops-approved';
+                    return `<a class="ops-event ${cls}" href="#/admin/reservation/${esc(r.id)}" title="${esc(r.id.toUpperCase() + ' ' + r.customerName)}">${esc(r.customerName.split(' ')[0])} <small>${esc(r.status)}</small></a>`;
+                }).concat(ms.map(m => `<span class="ops-event ops-service" title="${esc(m.title||'Service')}">Service <small>${esc(m.status)}</small></span>`));
+                return `<td class="${toManilaDateKey(d)===todayKey()?'fleet-today':''}"><div class="fleet-cell">${events.join('') || (down ? '<span class="ops-event ops-service">Maintenance</span>' : '<span class="ops-free">-</span>')}</div></td>`;
+            }).join('');
+            return `<tr><th scope="row"><div class="fleet-moto"><strong>${esc(v.brand + ' ' + v.name)}</strong><span class="muted small">${esc(v.plateNumber || '-')} · ${esc(v.status)}</span></div></th>${cells}</tr>`;
+        });
+        mount(`
+            <div class="page-header">
+              <div><h1 class="page-title">Fleet schedule</h1><p class="page-desc">Read-only dispatch calendar based on current reservations and maintenance. Manila time.</p></div>
+            </div>
+            <div class="metrics mb-3">
+              <div class="metric"><div class="metric-label">Pending requests</div><div class="metric-value">${visibleReservations.filter(r=>r.status==='pending').length}</div></div>
+              <div class="metric"><div class="metric-label">Approved / ongoing</div><div class="metric-value">${visibleReservations.filter(r=>['approved','ongoing'].includes(r.status)).length}</div></div>
+              <div class="metric"><div class="metric-label">Scheduled services</div><div class="metric-value">${visibleServices.length}</div></div>
+              <div class="metric"><div class="metric-label">Motorcycles shown</div><div class="metric-value">${fleet.length}</div></div>
+            </div>
+            <div class="toolbar fleet-toolbar">
+              <button class="btn" type="button" onclick="App.setUI('opsScheduleStart','${shift(-days)}');App.render()">Previous</button>
+              <input class="input" type="date" aria-label="Schedule start" value="${esc(start)}" onchange="App.setUI('opsScheduleStart',this.value);App.render()">
+              <button class="btn" type="button" onclick="App.setUI('opsScheduleStart','${todayKey()}');App.render()">Today</button>
+              <button class="btn" type="button" onclick="App.setUI('opsScheduleStart','${shift(days)}');App.render()">Next</button>
+              <select class="select" aria-label="Calendar range" onchange="App.setUI('fleetDays',this.value);App.render()"><option value="7" ${days===7?'selected':''}>7 days</option><option value="14" ${days===14?'selected':''}>14 days</option></select>
+              <select class="select" aria-label="Motorcycle filter" onchange="App.setUI('fleetVehicle',this.value);App.render()"><option value="all">All motorcycles</option>${state.vehicles.map(v=>`<option value="${esc(v.id)}" ${v.id===filter?'selected':''}>${esc(v.brand + ' ' + v.name)} (${esc(v.plateNumber||'-')})</option>`).join('')}</select>
+              <select class="select" aria-label="Event filter" onchange="App.setUI('fleetKind',this.value);App.render()">${[['all','All events'],['rental','Reservations'],['service','Service']].map(([k,l])=>`<option value="${k}" ${kind===k?'selected':''}>${l}</option>`).join('')}</select>
+            </div>
+            <div class="panel ops-calendar"><div class="table-wrap"><table class="table ops-fleet-table fleet-interactive" style="--fleet-days:${days}"><thead><tr><th scope="col">Motorcycle</th>${dates.map(d=>`<th scope="col" class="${toManilaDateKey(d)===todayKey()?'fleet-today':''}">${esc(new Date(d).toLocaleDateString('en-PH',{timeZone:'Asia/Manila',weekday:'short'}))}<strong>${esc(new Date(d).toLocaleDateString('en-PH',{timeZone:'Asia/Manila',month:'short',day:'numeric'}))}</strong></th>`).join('')}</tr></thead><tbody>${rows.join('') || '<tr><td colspan="'+(days+1)+'"><div class="empty">No motorcycles match this filter.</div></td></tr>'}</tbody></table></div></div>
+            <div class="ops-legend mt-3"><span><i class="fleet-key ops-pending"></i>Pending</span><span><i class="fleet-key ops-approved"></i>Approved / ongoing</span><span><i class="fleet-key ops-completed"></i>Completed</span><span><i class="fleet-key ops-service"></i>Service / maintenance</span></div>
+        `);
+    }
+
     function renderActivityLog() {
         if (state.role !== 'admin') return;
         const list = filteredActivity();
