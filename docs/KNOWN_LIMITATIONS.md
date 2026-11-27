@@ -70,7 +70,7 @@ V.E.R.A. is an **interactive prototype for demonstration and academic purposes**
 
 ## 9. Landing page prototype limitations
 - **Display-only promos/ads:** Landing promos and partner/ad slots are seeded demo content. No discount math, no promo code input, no cart/checkout impact, and no change to `App.computeFee`.
-- **Local images only:** Landing/hero/promo/ad images are included under `images/landing/`. Missing files still fall back to CSS gradient/emoji placeholders; no remote image hotlinking.
+- **Local images only:** Landing uses existing local vehicle images from `images/vehicles/`. Missing files still fall back to CSS gradient/emoji placeholders; no remote image hotlinking.
 - **In-memory banner dismissal:** Promo banner dismissal resets on reload.
 - **Static auth/demo flow:** Login/Sign up buttons route to existing demo role-selection screen; no real authentication, account creation, or backend.
 

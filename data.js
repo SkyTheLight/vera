@@ -359,14 +359,14 @@ const vehicles = [
   const landing = {
     featuredCount: 4,
     promos: [
-      { id: 'promo-weekday', title: 'Weekday Deal', description: 'Plan a weekday ride and enjoy a lighter travel schedule. Great for city errands or quick escapes.', validFrom: day(-30, 0), validUntil: day(45, 23), terms: 'Subject to vehicle availability and admin approval. Display only in prototype.', imageUrl: 'images/landing/promo-weekday.jpg', badge: 'Promo' },
-      { id: 'promo-multi-day', title: '3+ Day Rental', description: 'Reserve for three days or more for longer trips around Rizal and nearby cities.', validFrom: day(-10, 0), validUntil: day(60, 23), terms: 'Minimum 3 rental days. Final estimate shown during booking.', imageUrl: 'images/landing/promo-multiday.jpg', badge: 'Long Ride' },
-      { id: 'promo-delivery', title: 'Free Delivery in Cainta', description: 'Selected areas may qualify for free host delivery during promo periods.', validFrom: day(-5, 0), validUntil: day(20, 23), terms: 'Coverage and schedule confirmed by admin. Prototype display only.', imageUrl: 'images/landing/promo-delivery.jpg', badge: 'Delivery' },
-      { id: 'promo-expired', title: 'Past Launch Offer', description: 'Expired sample promo used to verify filtering behavior.', validFrom: day(-60, 0), validUntil: day(-1, 23), terms: 'Expired demo promo.', imageUrl: 'images/landing/promo-expired.jpg', badge: 'Expired' }
+      { id: 'promo-weekday', title: 'Weekday Deal', description: 'Plan a weekday ride and enjoy a lighter travel schedule. Great for city errands or quick escapes.', validFrom: day(-30, 0), validUntil: day(45, 23), terms: 'Subject to vehicle availability and admin approval. Display only in prototype.', imageUrl: 'images/vehicles/zx4rr-2026-front-angle.jpg', badge: 'Promo' },
+      { id: 'promo-multi-day', title: '3+ Day Rental', description: 'Reserve for three days or more for longer trips around Rizal and nearby cities.', validFrom: day(-10, 0), validUntil: day(60, 23), terms: 'Minimum 3 rental days. Final estimate shown during booking.', imageUrl: 'images/vehicles/cb650r-front-angle.jpg', badge: 'Long Ride' },
+      { id: 'promo-delivery', title: 'Free Delivery in Cainta', description: 'Selected areas may qualify for free host delivery during promo periods.', validFrom: day(-5, 0), validUntil: day(20, 23), terms: 'Coverage and schedule confirmed by admin. Prototype display only.', imageUrl: 'images/vehicles/cbr650r-front-angle.jpg', badge: 'Delivery' },
+      { id: 'promo-expired', title: 'Past Launch Offer', description: 'Expired sample promo used to verify filtering behavior.', validFrom: day(-60, 0), validUntil: day(-1, 23), terms: 'Expired demo promo.', imageUrl: 'images/vehicles/z1100-se-front-angle.jpg', badge: 'Expired' }
     ],
     ads: [
-      { id: 'ad-wide', slot: 'wide', label: 'Sponsored', title: 'Rider Gear Partner', description: 'Demo partner slot for helmets, jackets, and riding essentials.', imageUrl: 'images/landing/ad-wide.jpg', cta: 'Partner Demo' },
-      { id: 'ad-card', slot: 'card', label: 'Partner', title: 'Moto Care Station', description: 'Placeholder ad for maintenance and detailing partner.', imageUrl: 'images/landing/ad-card.jpg', cta: 'Sponsored' }
+      { id: 'ad-wide', slot: 'wide', label: 'Sponsored', title: 'Rider Gear Partner', description: 'Demo partner slot for helmets, jackets, and riding essentials.', imageUrl: 'images/vehicles/zx10r-2025-front-angle.jpg', cta: 'Partner Demo' },
+      { id: 'ad-card', slot: 'card', label: 'Partner', title: 'Moto Care Station', description: 'Placeholder ad for maintenance and detailing partner.', imageUrl: 'images/vehicles/zx4rr-2027-front-angle.jpg', cta: 'Sponsored' }
     ]
   };
   window.VERA_SEED = { vehicles, customers, reservations, payments, maintenanceLogs, notifications, overtimeSettings: JSON.parse(JSON.stringify(DEFAULT_OVERTIME_SETTINGS)), locationPings: JSON.parse(JSON.stringify(locationPings)), landing: JSON.parse(JSON.stringify(landing)) };

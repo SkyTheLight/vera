@@ -506,7 +506,7 @@
               </div>
               <div class="landing-trust"><span>Admin approval before payment</span><span>GCash / Other proof upload</span><span>GPS consent for ongoing rentals</span></div>
             </div>
-            <div class="landing-hero-media-wrap">${landingImage('images/landing/hero.jpg', 'Motorcycle rental hero image', 'landing-hero-media', '🏍️', 'Add hero.jpg')}</div>
+            <div class="landing-hero-media-wrap">${landingImage('images/vehicles/zx6r-2025-front-angle.jpg', 'Motorcycle rental hero image', 'landing-hero-media', '🏍️', 'Vehicle image')}</div>
           </div>
         </section>
 

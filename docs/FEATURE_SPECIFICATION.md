@@ -138,7 +138,7 @@ Allows a customer to select how the vehicle will be handed over at pickup and re
 - Featured vehicle cards use existing vehicle data and link to vehicle detail (existing login/role guard applies).
 - Deposit is read from `App.getDepositAmount()`; overtime rules link uses existing overtime modal/settings.
 - Assistant chat bubble is hidden on landing for logged-out visitors.
-- Images are local under `images/landing/` (included in repo); missing images fall back to CSS gradient + emoji. No remote image hotlinking.
+- Landing uses existing local vehicle images from `images/vehicles/` (and fallback gradient+emoji if missing). No remote image hotlinking.
 
 ## 11. V.E.R.A. Assistant (customer chat, rule-based v1)
 
