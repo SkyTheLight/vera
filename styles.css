@@ -120,13 +120,21 @@ p {
     width: 28px;
     height: 28px;
     border-radius: 4px;
-    background: var(--accent);
+    background: transparent;
     color: #fff;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-weight: 600;
     font-size: 14px;
+    overflow: hidden;
+}
+
+.brand-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
 }
 
 .brand-text {
@@ -2410,13 +2418,21 @@ p {
     width: 28px;
     height: 28px;
     border-radius: 4px;
-    background: var(--accent);
+    background: transparent;
     color: #fff;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-weight: 600;
     font-size: 14px;
+    overflow: hidden;
+}
+
+.brand-logo {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
 }
 
 .brand-text {
