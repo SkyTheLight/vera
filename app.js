@@ -1044,88 +1044,64 @@
           </div><p class="small muted mt-2">Hours are rounded up to the next whole hour.</p></div></div>`);
     }
 
-    function renderCustomerVehicleDetail(id) {
-        const v = getVehicle(id);
-        if (!v)
-            return mount(`<div class="empty"><div class="empty-title">Vehicle not found</div><div><a href="#/customer/vehicles">Return to vehicles</a></div></div>`);
-        const condition = vehicleOperationalState(v).condition;
-        const blockedVehicle = condition !== 'available';
-        const cust = currentCustomer();
-        const hasLicense = bookingHasLicense(cust);
-        const deposit = getDepositAmount();
-        const bookedRanges = getBlockedRanges(id);
-        const prefill = state.ui.bookingPrefill && state.ui.bookingPrefill.vehicleId === id ? state.ui.bookingPrefill : null;
-        mount(`
-      <div style="margin-bottom:12px;"><a href="#/customer/vehicles" class="btn btn-ghost btn-sm" data-ai-target="browse-vehicles-link">&larr; Back to vehicles</a></div>
-      <div class="page-header">
-        <div><h1 class="page-title">${esc(v.name)}</h1><p class="page-desc">${esc(v.brand)} ${esc(v.model)} � ${v.year} � ${esc(v.color)}</p></div>
-        <div>${vehicleOperationalBadges(v, false)}</div>
-      </div>
-      <div class="grid-3">
-        <div class="stack">
-          <div class="panel"><div class="panel-body">${vehicleMark(v, true)}
-            <div class="kv mt-3">
-              <div class="k">Plate number</div><div class="v mono">${esc(v.plateNumber)}</div>
-              <div class="k">Displacement</div><div class="v" style="text-transform:capitalize">${esc(displacementLabel(v.displacement))}</div>
-              <div class="k">Seats</div><div class="v">${v.seats}</div>
-              <div class="k">Transmission</div><div class="v">${esc(v.transmission)}</div>
-              <div class="k">Daily rate</div><div class="v">${fmtPHP(v.ratePerDay)}</div>
-              <div class="k">Hourly rate</div><div class="v">${fmtPHP(v.ratePerHour)}</div>
-            </div>
-          </div></div>
-          <div class="panel"><div class="panel-header"><div class="panel-title">Booking rule: overlap prevention</div></div><div class="panel-body">
-            <p class="small muted mb-2">A request is blocked when its date range overlaps an approved or ongoing rental for the same vehicle, or the vehicle is under maintenance.</p>
-            <div class="callout small"><span class="mono">newStart &lt; existingEnd &amp;&amp; newEnd &gt; existingStart</span></div>
-            <div class="small muted mt-2">${bookedRanges.length ? `<strong>Blocked periods:</strong> ${bookedRanges.map(r => `${fmtDateShort(r.start)} – ${fmtDateShort(new Date(Date.parse(r.end)-1).toISOString())}`).join('; ')}` : 'No approved/ongoing bookings blocking this vehicle right now.'}</div>
-          </div></div>
-        </div>
-        <div style="grid-column: span 2;">
-          <div class="panel"><div class="panel-header"><div class="panel-title">Book this vehicle</div></div><div class="panel-body">
-            ${blockedVehicle ? `<div class="callout danger">This vehicle is currently marked <strong>Maintenance</strong> and cannot accept reservation requests.</div>` : `
-            ${v.status === 'rented' ? `<div class="callout warning mb-2">This motorcycle is currently rented. You can request a future rental for dates outside existing bookings.</div>` : ''}
-            <form id="reqForm" data-ai-target="booking-form" onsubmit="App.submitReservation(event,'${v.id}')" class="stack booking-flow">
-              <div class="booking-step"><div class="step-head"><span class="step-num">1</span><div><div class="step-title">Choose model</div><div class="small muted">Selected: ${esc(v.brand)} ${esc(v.name)} (${esc(v.displacement)}cc)</div></div></div></div>
-
-              <div class="booking-step"><div class="step-head"><span class="step-num">2</span><div><div class="step-title">Dates + delivery/pickup</div><div class="small muted">Pick a start and end date. Blocked/conflicting dates are disabled.</div></div></div>
-                <div class="field"><label class="field-label" for="dateRange">Rental dates</label><input id="dateRange" class="input" type="text" placeholder="Select start date then end date" readonly required><div class="field-hint">One calendar range only. If a range crosses a blocked date, it will be cleared.</div></div>
-                <div class="grid-2">
-                  <div class="field"><label class="field-label" for="pickupTime">Pickup time</label><input id="pickupTime" class="input" type="time" value="09:00" required onchange="App.updateFeePreview('${v.id}')"></div>
-                  <div class="field"><label class="field-label" for="returnTime">Return time</label><input id="returnTime" class="input" type="time" value="09:00" required onchange="App.updateFeePreview('${v.id}')"></div>
-                </div>
-                <input type="hidden" id="start" name="start"><input type="hidden" id="end" name="end">
-                <div id="rangeSummary" class="callout small muted">Select a date range to see duration.</div>
-                <div class="field"><label class="field-label" for="deliveryMethod">Delivery method</label>
-                  <select id="deliveryMethod" name="deliveryMethod" class="select" required>
-                    <option value="">Select pickup and return option</option>
-                    ${DELIVERY_METHODS.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}
-                  </select>
-                  <div class="field-hint">Required. Choose how the vehicle will be picked up and returned.</div>
-                </div>
-              </div>
-
-              <div class="booking-step"><div class="step-head"><span class="step-num">3</span><div><div class="step-title">Live estimated price</div><div class="small muted">Updates when dates change. Fees use existing compute logic.</div></div></div>
-                <div id="feePreview" class="callout info small">Select start and end dates to calculate the estimated fee.</div>
-                <div id="conflictMsg"></div>
-                <button type="button" class="link-btn small" onclick="App.openOvertimeRulesModal()">View overtime rules</button>
-              </div>
-
-              <div class="booking-step"><div class="step-head"><span class="step-num">4</span><div><div class="step-title">License check</div><div class="small muted">LTO license (Restriction Code A/A1) required before submit.</div></div></div>
-                ${hasLicense ? `<div class="callout success small">License on file. You can proceed to review and confirm.</div>` : `<div class="callout danger small"><strong>License required.</strong> Upload your LTO license (Restriction Code A/A1) in your profile before submitting. <a href="${licenseUploadTarget()}" data-ai-target="upload-license-link">Upload license in Account</a></div>`}
-              </div>
-
-              <div class="booking-step"><div class="step-head"><span class="step-num">5</span><div><div class="step-title">Review and confirm</div><div class="small muted">No payment is collected at this stage.</div></div></div>
-                <div id="reviewSummary" class="callout small muted">Complete the steps above to review your booking.</div>
-                <label class="field" style="display:flex;gap:10px;align-items:flex-start"><input id="trackingConsent" name="trackingConsent" type="checkbox" required style="margin-top:3px"><span class="small muted">I agree the vehicle may be tracked by GPS during my rental period.</span></label>
-                <button class="btn btn-primary btn-block" type="submit" data-ai-target="booking-submit" ${hasLicense ? '' : 'disabled'}>Submit reservation request</button>
-                <p class="small muted">Requests are submitted as <strong>Pending</strong> until reviewed by the administrator. No payment prompt at this stage.</p>
-              </div>
-            </form>`}
-          </div></div>
-        </div>
-      </div>
-    `);
-        if (!blockedVehicle) initBookingForm(v, { prefill });
+    // Customer booking workspace: draft is scoped to the customer and motorcycle.
+    const bookingDrafts = new Map();
+    let activeBooking = null;
+    const bkDay = 86400000;
+    function bkShift(key, days) { return toManilaDateKey(new Date(Date.parse(key+'T00:00:00+08:00')+days*bkDay).toISOString()); }
+    function bkKey(v) { return String(currentCustomer()?.id || 'guest')+':'+v.id; }
+    function bkDates(d) { return {start:manilaDateTimeToISO(d.pickupDate,d.pickupTime),end:manilaDateTimeToISO(d.returnDate,d.returnTime)}; }
+    function bkProblem(v,d) {
+        const {start,end}=bkDates(d);
+        if(!start||!end) return 'Choose your pickup and return dates and times.';
+        if(Date.parse(start)<Date.now()) return 'Choose a pickup time in the future.';
+        if(Date.parse(end)<=Date.parse(start)) return 'Return must be after pickup.';
+        if(hasConflict(v.id,start,end).conflict) return 'These dates are unavailable. Choose another period or motorcycle.';
+        return '';
     }
+    function bkStyles(){return `<style>
+      .bk-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(360px,1fr);gap:22px;align-items:start}.bk-layout>*{min-width:0}.bk-photo{aspect-ratio:16/10;background:#fff;border-radius:9px;overflow:hidden;display:grid;place-items:center}.bk-photo img{width:100%;height:100%;object-fit:contain}.bk-photo .vehicle-photo-placeholder{color:#333}.bk-title{font-size:25px;margin:0}.bk-specs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.bk-spec{border:1px solid var(--border);border-radius:7px;padding:10px;display:grid;gap:4px}.bk-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:18px}.bk-step{padding:9px 4px;border-bottom:2px solid var(--border);color:var(--text-muted);text-align:center;font-size:12px}.bk-step.active{border-color:var(--accent);color:var(--accent);font-weight:600}.bk-step.done{border-color:var(--success)}.bk-calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}.bk-day{min-height:34px;padding:4px 0;background:var(--bg);border:1px solid var(--border);border-radius:5px;color:var(--text);cursor:pointer}.bk-day:disabled{cursor:not-allowed;color:var(--text-faint);opacity:.65}.bk-day.blocked{background:var(--danger-soft);color:var(--danger)}.bk-day.selected{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}.bk-day.today{outline:1px solid var(--accent)}.bk-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}.bk-summary{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px}.bk-price-row{display:flex;justify-content:space-between;gap:12px;margin:7px 0}.bk-options{display:grid;grid-template-columns:1fr 1fr;gap:8px}.bk-options label{border:1px solid var(--border);border-radius:7px;padding:10px;display:flex;align-items:center;gap:7px;cursor:pointer}.bk-options label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}.bk-form .field{margin:0}.bk-booking{position:sticky;top:72px}.bk-booking .panel-body{padding:18px}.bk-note{font-size:12px;color:var(--text-muted)}.bk-alts{display:flex;gap:8px;flex-wrap:wrap}.bk-check{display:flex;align-items:flex-start;gap:10px}.bk-check input{margin-top:4px}.bk-layout [hidden]{display:none!important}.bk-calendar button:focus-visible{outline:2px solid var(--accent)}
+      @media(max-width:1000px){.bk-layout{grid-template-columns:1fr}.bk-booking{position:static}}@media(max-width:480px){.bk-options,.bk-specs{grid-template-columns:1fr}.bk-booking .panel-body{padding:12px}.bk-step{font-size:11px}}
+    </style>`;}
+    function renderCustomerVehicleDetail(id) {
+        const v=getVehicle(id); if(!v)return mount('<div class="empty">Vehicle not found. <a href="#/customer/vehicles">Back to motorcycles</a></div>');
+        const cust=currentCustomer(), key=bkKey(v), pre=state.ui.bookingPrefill;
+        let d=bookingDrafts.get(key)||{step:1,pickupDate:'',returnDate:'',pickupTime:'09:00',returnTime:'09:00',pickup:'guest',dropoff:'guest',deliveryAddress:'',collectionAddress:'',consent:false,month:todayKey().slice(0,7),selectingEnd:false};
+        if(pre?.vehicleId===id && Number.isFinite(Date.parse(pre.start)) && Number.isFinite(Date.parse(pre.end))){const a=fmtDateTimeInput(pre.start),b=fmtDateTimeInput(pre.end);Object.assign(d,{pickupDate:a.slice(0,10),returnDate:b.slice(0,10),pickupTime:a.slice(11,16),returnTime:b.slice(11,16),month:a.slice(0,7),step:1});state.ui.bookingPrefill=null;}
+        bookingDrafts.set(key,d);activeBooking={v,d,key};
+        const blocked=!isVehicleBookable(v),specs=[['Displacement',displacementLabel(v.displacement)],['Transmission',v.transmission],['Capacity',v.seats+' seats'],['Plate number',v.plateNumber]];
+        const options=(name,items)=>`<div class="bk-options">${items.map(([value,label])=>`<label><input type="radio" name="${name}" value="${value}" ${d[name]===value?'checked':''}>${label}</label>`).join('')}</div>`;
+        const dateField=(name,label,type)=>`<label class="field"><span class="field-label">${label}</span><input class="input" type="${type}" name="${name}" value="${esc(d[name])}" ${type==='date'?`min="${todayKey()}"`:''}></label>`;
+        const offers=getLandingPromos().filter(p=>!p.validFrom||String(p.validFrom).slice(0,10)<=todayKey());
+        mount(`${bkStyles()}<div class="mb-3"><a href="#/customer/vehicles" class="btn btn-ghost btn-sm" data-ai-target="browse-vehicles-link">&larr; Back to motorcycles</a></div>
+        <div class="bk-layout"><div class="stack"><div class="bk-photo">${vehicleImage(v)}</div><div class="bk-heading"><h1 class="bk-title">${esc(v.brand)} ${esc(v.name)}</h1>${vehicleOperationalBadges(v,false)}</div><p class="muted">${esc(v.year)} &middot; ${esc(v.color)}</p><div class="bk-specs">${specs.map(([k,val])=>`<div class="bk-spec"><span class="small muted">${k}</span><strong>${esc(val)}</strong></div>`).join('')}</div>
+        <div class="panel"><div class="panel-header"><div class="panel-title">Availability calendar</div></div><div class="panel-body stack"><div class="bk-heading"><button type="button" class="btn btn-sm" onclick="App.bkMonth(-1)" aria-label="Previous month">&larr;</button><strong id="bkMonthLabel"></strong><button type="button" class="btn btn-sm" onclick="App.bkMonth(1)" aria-label="Next month">&rarr;</button></div><div class="bk-calendar" id="bkCalendar"></div><div class="small muted">Select pickup, then return. Red dates are unavailable; blue dates are selected. Times use Philippine time.</div></div></div>
+        ${offers.length?`<div class="panel"><div class="panel-body stack"><strong>Current offers</strong>${offers.map(p=>`<div><strong>${esc(p.title||p.name||'Promotion')}</strong><p class="small muted">${esc(p.description||p.terms||'Ask the rental provider for details.')}</p></div>`).join('')}<p class="small muted">Offers are subject to confirmation; no automatic discount is applied.</p></div></div>`:''}</div>
+        <div class="panel bk-booking"><div class="panel-body stack"><div class="bk-heading"><div><p class="muted small">Book this motorcycle</p><strong style="font-size:27px">${fmtPHP(v.ratePerDay)}</strong> <span class="muted">/ day</span></div></div>
+        ${blocked?`<div class="callout danger">This motorcycle is under maintenance and cannot accept bookings.</div><a class="btn" href="#/customer/vehicles">Browse other motorcycles</a>`:`${vehicleOperationalState(v).rented?'<div class="callout small">Currently rented. You can request available future dates.</div>':''}
+        <div class="bk-steps" aria-label="Booking progress">${['Rental details','Requirements','Review & submit'].map((s,i)=>`<div id="bkStep${i+1}" class="bk-step">${i+1}. ${s}</div>`).join('')}</div>
+        <form id="reqForm" class="stack bk-form" data-ai-target="booking-form" onsubmit="App.bkSubmit(event,'${esc(id)}')" oninput="App.bkSync()" onchange="App.bkSync()" novalidate>
+        <input type="hidden" name="start" id="start"><input type="hidden" name="end" id="end"><input type="hidden" name="deliveryMethod" id="deliveryMethod">
+        <section class="stack bk-stage" id="bkStage1"><h3>Rental period</h3><div class="grid-2">${dateField('pickupDate','Pickup date','date')}${dateField('pickupTime','Pickup time','time')}${dateField('returnDate','Return date','date')}${dateField('returnTime','Return time','time')}</div><div id="rangeSummary" class="small muted"></div><div id="conflictMsg" aria-live="polite"></div><div id="bkAlternatives" class="bk-alts"></div><h3>Pickup method</h3>${options('pickup',[['guest','Guest pickup'],['host','Host delivery']])}<label class="field bk-address" id="bkDelivery"><span class="field-label">Delivery address</span><textarea class="textarea" name="deliveryAddress" maxlength="500" rows="2">${esc(d.deliveryAddress)}</textarea></label><h3>Return method</h3>${options('dropoff',[['guest','Guest return'],['host','Host collection']])}<label class="field bk-address" id="bkCollection"><span class="field-label">Collection address</span><textarea class="textarea" name="collectionAddress" maxlength="500" rows="2">${esc(d.collectionAddress)}</textarea></label></section>
+        <section class="stack bk-stage" id="bkStage2" hidden><h3>Rental requirements</h3><div>${cust?customerAvatar(cust)+` <strong>${esc(cust.name)}</strong>`:''}</div><div class="bk-spec"><span class="small muted">Identity verification</span>${cust?identityBadge(cust):'Account required'}<a href="${licenseUploadTarget()}" data-ai-target="upload-license-link">Manage identification in Account</a><span class="small muted">Administrator reviews identity before release.</span></div><div id="bkLicense" class="callout small"></div><div id="bkRestriction"></div><label class="bk-check"><input type="checkbox" name="trackingConsent" id="trackingConsent" ${d.consent?'checked':''}><span>I agree that the motorcycle may be tracked by GPS during my rental period.</span></label></section>
+        <section class="stack bk-stage" id="bkStage3" hidden><h3>Review your reservation</h3><div id="reviewSummary" class="bk-summary"></div><p class="small muted">Your request will be reviewed before payment is requested. Availability is subject to administrator confirmation.</p></section>
+        <div id="feePreview" class="bk-summary" aria-live="polite"></div><button type="button" class="link-btn" onclick="App.openOvertimeRulesModal()">View overtime and additional charge rules</button>
+        <div class="bk-heading"><button type="button" id="bkBack" class="btn" onclick="App.bkAdvance(-1)">Back</button><button type="button" id="bkNext" class="btn btn-primary" onclick="App.bkAdvance(1)">Continue</button><button type="submit" id="bkSubmit" class="btn btn-primary" data-ai-target="booking-submit" hidden>Submit reservation request</button></div><p class="bk-note" style="text-align:center">No payment required until approval.</p></form>`}</div></div></div>`);
+        bkRenderCalendar();if(!blocked){bkSync();bkShowStep();}
+    }
+    function bkRenderCalendar(){const box=$('#bkCalendar'),title=$('#bkMonthLabel');if(!box||!activeBooking)return;const {v,d}=activeBooking;const first=new Date(d.month+'-01T00:00:00Z');const year=first.getUTCFullYear(),month=first.getUTCMonth(),n=new Date(Date.UTC(year,month+1,0)).getUTCDate();title.textContent=first.toLocaleDateString('en-PH',{month:'long',year:'numeric',timeZone:'UTC'});const blocked=getBlockedRanges(v.id);box.innerHTML=['S','M','T','W','T','F','S'].map(x=>`<span class="small muted" style="text-align:center">${x}</span>`).join('')+'<span></span>'.repeat(first.getUTCDay())+Array.from({length:n},(_,i)=>{const key=d.month+'-'+String(i+1).padStart(2,'0'),a=manilaDateTimeToISO(key,'00:00'),b=manilaDateTimeToISO(bkShift(key,1),'00:00');const off=!isVehicleBookable(v)||rangeCrossesBlocked(a,b,blocked),past=key<todayKey(),selected=d.pickupDate&&key>=d.pickupDate&&key<=(d.returnDate||d.pickupDate);return `<button type="button" class="bk-day ${off?'blocked':''} ${selected?'selected':''} ${key===todayKey()?'today':''}" ${off||past?'disabled':''} aria-label="${key}${off?' unavailable':''}" onclick="App.bkChooseDate('${key}')">${i+1}</button>`;}).join('');}
+    function bkMonth(delta){if(!activeBooking)return;const d=activeBooking.d,f=new Date(d.month+'-01T00:00:00Z');f.setUTCMonth(f.getUTCMonth()+delta);d.month=f.toISOString().slice(0,7);bkRenderCalendar();}
+    function bkChooseDate(key){const f=$('#reqForm');if(!f||!activeBooking)return;const d=activeBooking.d;if(!d.selectingEnd||!d.pickupDate||key<d.pickupDate){f.elements.pickupDate.value=key;f.elements.returnDate.value=key;d.selectingEnd=true;}else{f.elements.returnDate.value=key;d.selectingEnd=false;}d.step=1;bkSync();bkShowStep();}
+    function bkSync(){const f=$('#reqForm');if(!f||!activeBooking)return;const {v,d}=activeBooking;const previousPickup=d.pickupDate;for(const k of ['pickupDate','returnDate','pickupTime','returnTime','pickup','dropoff','deliveryAddress','collectionAddress'])d[k]=f.elements[k].value;if(d.pickupDate&&d.pickupDate!==previousPickup)d.month=d.pickupDate.slice(0,7);d.consent=f.elements.trackingConsent.checked;const {start,end}=bkDates(d);f.elements.start.value=start||'';f.elements.end.value=end||'';f.elements.deliveryMethod.value=DELIVERY_METHODS[(d.pickup==='host'?2:0)+(d.dropoff==='host'?1:0)];$('#bkDelivery').hidden=d.pickup!=='host';$('#bkCollection').hidden=d.dropoff!=='host';const problem=bkProblem(v,d),fee=computeFee(v.id,start,end),deposit=getDepositAmount();$('#rangeSummary').textContent=fee.days?`${fee.days} billable day(s) · Philippine time`:'';$('#conflictMsg').innerHTML=start&&end?`<div class="callout small ${problem?'danger':'success'}">${esc(problem||'Selected dates are available for request.')}</div>`:'';$('#feePreview').innerHTML=`<strong>Price breakdown</strong><div class="bk-price-row"><span class="muted">Rental${fee.days?' · '+fee.days+' day(s)':''}</span><strong>${fee.days?fmtPHP(fee.total):'—'}</strong></div><div class="bk-price-row"><span class="muted">Refundable deposit</span><strong>${fmtPHP(deposit)}</strong></div><div class="divider"></div><div class="bk-price-row"><strong>Total to prepare</strong><strong style="font-size:20px;color:var(--accent)">${fee.days?fmtPHP(fee.total+deposit):'—'}</strong></div><p class="small muted">Delivery charges or offers, if applicable, require confirmation.</p>`;
+        const lic=getLicenseStatus(currentCustomer(),{end});$('#bkLicense').innerHTML=bookingHasLicense(currentCustomer())&&lic.status==='Valid'?`<strong>Driver’s license on file</strong><div>${esc(lic.detail)}</div>`:`<strong>Valid driver’s license required</strong><div>${esc(lic.detail)}. <a href="${licenseUploadTarget()}">Update Account</a></div>`;const restriction=customerRestriction(currentCustomer());$('#bkRestriction').innerHTML=restriction?`<div class="callout danger small">${esc(restriction)}</div>`:'';
+        $('#reviewSummary').innerHTML=`<strong>${esc(v.brand)} ${esc(v.name)}</strong><div class="bk-price-row"><span class="muted">Pickup</span><span>${start?fmtDate(start,{time:true}):'—'}</span></div><div class="bk-price-row"><span class="muted">Return</span><span>${end?fmtDate(end,{time:true}):'—'}</span></div><p>${esc(f.elements.deliveryMethod.value)}</p>${d.pickup==='host'?`<p class="small">Delivery: ${esc(d.deliveryAddress)}</p>`:''}${d.dropoff==='host'?`<p class="small">Collection: ${esc(d.collectionAddress)}</p>`:''}<p class="small muted">GPS tracking consent: ${d.consent?'Accepted':'Not accepted'}</p>`;
+        const alt=$('#bkAlternatives');alt.innerHTML='';if(problem&&start&&end&&Date.parse(end)>Date.parse(start)){const similar=state.vehicles.filter(x=>x.id!==v.id&&String(x.displacement)===String(v.displacement)&&isVehicleBookable(x)&&!hasConflict(x.id,start,end).conflict).slice(0,2);let next=null;for(let i=1;i<=30;i++){const a=bkShift(d.pickupDate,i),b=bkShift(d.returnDate,i);if(!bkProblem(v,{...d,pickupDate:a,returnDate:b})){next=[a,b];break;}}alt.innerHTML=(next?`<button class="btn btn-sm" type="button" onclick="App.bkAlternative('${next[0]}','${next[1]}')">Try ${next[0]} – ${next[1]}</button>`:'')+similar.map(x=>`<button class="btn btn-sm" type="button" onclick="App.bkSimilar('${esc(x.id)}')">Try ${esc(x.name)} · ${esc(x.plateNumber)}</button>`).join('');}bkRenderCalendar();}
+    function bkAlternative(a,b){const f=$('#reqForm');if(!f)return;f.elements.pickupDate.value=a;f.elements.returnDate.value=b;activeBooking.d.month=a.slice(0,7);bkSync();}
+    function bkSimilar(id){if(!activeBooking)return;const {start,end}=bkDates(activeBooking.d);state.ui.bookingPrefill={vehicleId:id,start,end};navigate('#/customer/vehicle/'+id);}
+    function bkShowStep(){if(!activeBooking||!$('#reqForm'))return;const d=activeBooking.d;for(let i=1;i<=3;i++){$('#bkStage'+i).hidden=d.step!==i;$('#bkStep'+i).className='bk-step'+(d.step===i?' active':d.step>i?' done':'');}$('#bkBack').hidden=d.step===1;$('#bkNext').hidden=d.step===3;$('#bkNext').textContent=d.step===1?'Continue to requirements':'Review reservation';$('#bkSubmit').hidden=d.step!==3;}
+    function bkValidate(step){const {v,d}=activeBooking;const p=bkProblem(v,d);if(p)return p;if(d.pickup==='host'&&!d.deliveryAddress.trim())return 'Enter a delivery address.';if(d.dropoff==='host'&&!d.collectionAddress.trim())return 'Enter a collection address.';if(step>=2){const c=currentCustomer(),r=customerRestriction(c),{end}=bkDates(d);if(r)return r;if(!bookingHasLicense(c)||getLicenseStatus(c,{end}).status!=='Valid')return 'A valid driver’s license through your return date is required.';if(!d.consent)return 'Accept GPS tracking consent to continue.';}return '';}
+    function bkAdvance(delta){if(!activeBooking)return;bkSync();const d=activeBooking.d;if(delta>0){const p=bkValidate(d.step);if(p)return toast(p,'error');}d.step=Math.max(1,Math.min(3,d.step+delta));bkShowStep();}
+    function bkSubmit(e,id){e.preventDefault();if(!activeBooking||activeBooking.v.id!==id||state.role!=='customer')return;if(activeBooking.d.step!==3)return bkAdvance(1);bkSync();const p=bkValidate(3);if(p)return toast(p,'error');submitReservation(e,id);}
 
     // ---------- Customer: Reservations ----------
     function renderCustomerReservations() {
@@ -1242,7 +1218,7 @@
                 </section>
                 <section class="reservation-section">
                     <h3>Delivery arrangements</h3>
-                    <div class="delivery-options">${delivery('Pickup method', pickup)}${delivery('Return method', dropoff)}</div>
+                    <div class="delivery-options">${delivery('Pickup method', pickup)}${delivery('Return method', dropoff)}</div>${r.deliveryAddress?`<p class="small">Delivery address: ${esc(r.deliveryAddress)}</p>`:''}${r.collectionAddress?`<p class="small">Collection address: ${esc(r.collectionAddress)}</p>`:''}
                 </section>
                 <section class="reservation-section">
                     <h3>Payment breakdown</h3>
@@ -1336,6 +1312,7 @@
             </form>`) : '';
         mount(`
             <div class="mb-3"><a href="${back}" class="btn btn-ghost btn-sm" data-ai-target="my-reservations-link">&larr; Back to reservations</a></div>
+            ${!admin && state.ui.bookingSuccess===r.id && r.status==='pending' ? `<div class="panel mb-3"><div class="panel-body stack"><h2 style="color:var(--success)">Reservation request submitted</h2><strong>${esc(r.id.toUpperCase())}</strong><p>We received your request. Next: wait for approval, submit payment proof, then prepare for pickup.</p><p class="small muted">No payment is due before approval.</p></div></div>` : ''}
             ${!admin ? nextStepBannerHTML(r, state.payments) : ''}
             <div class="page-header">
                 <div><h1 class="page-title">Reservation ${esc(r.id.toUpperCase())}</h1><p class="page-desc">${esc(admin ? r.customerName + ' · ' + (v?.name || 'Vehicle') : v?.name || 'Vehicle')}</p></div>
@@ -1850,10 +1827,7 @@ function renderAdminVehicles(filter) {
                 </section>
             </div>
             <div class="res-footer"><div class="res-finance"><div class="res-finance-item"><span class="res-label">Rental fee</span><strong class="res-price">${fmtPHP(r.totalFee)}</strong>${r.overtimeFee ? `<span class="small muted">+ ${fmtPHP(r.overtimeFee)} overtime</span>` : ''}</div><div class="res-finance-item"><span class="res-label">Payment</span><span class="status status-${paymentClass}">${esc(paymentStatus)}</span></div></div>
-            <div class="res-actions"><a href="#/admin/reservation/${id}" class="btn">View details</a>
-            ${r.status === 'pending' ? `<button class="btn btn-primary" onclick="App.approveReservation('${id}')">Approve</button><button class="btn btn-danger" onclick="App.openRejectReservationModal('${id}')">Reject</button>` : ''}
-            ${r.status === 'approved' ? `<button class="btn btn-primary" onclick="App.startRental('${id}')">Start rental</button>` : ''}
-            ${r.status === 'ongoing' ? `<button class="btn btn-primary" onclick="App.openCompleteModal('${id}')">Complete rental</button>` : ''}
+            <div class="res-actions"><a href="#/admin/reservation/${id}" class="btn btn-primary">View details</a>
             </div></div>
         </article>`;
     }
@@ -2784,13 +2758,16 @@ function renderAdminVehicles(filter) {
         if (!cust) { toast('No customer account selected.', 'error'); return; }
         const restriction = customerRestriction(cust); if (restriction) return toast(restriction,'error');
         if (!bookingHasLicense(cust)) { toast('Upload your LTO license (Restriction Code A/A1) in Account before submitting.', 'error'); return; }
-        const startVal = form.start.value, endVal = form.end.value;
-        const deliveryMethod = form.deliveryMethod ? form.deliveryMethod.value : '';
-        const trackingConsentAccepted = !!form.trackingConsent?.checked;
+        const startVal = form.elements.start.value, endVal = form.elements.end.value;
+        const deliveryMethod = form.elements.deliveryMethod?.value || '';
+        const trackingConsentAccepted = !!form.elements.trackingConsent?.checked;
         if (!startVal || !endVal) { toast('Please select start and end dates.', 'error'); return; }
         if (!DELIVERY_METHODS.includes(deliveryMethod)) { toast('Please select a delivery method.', 'error'); form.deliveryMethod?.focus(); return; }
         if (!trackingConsentAccepted) { toast('Please agree to GPS tracking consent to continue.', 'error'); form.trackingConsent?.focus(); return; }
+        if (!Number.isFinite(Date.parse(startVal)) || !Number.isFinite(Date.parse(endVal))) return toast('Select valid dates.','error');
         const start = new Date(startVal).toISOString(), end = new Date(endVal).toISOString();
+        if(Date.parse(start)<Date.now()) return toast('Choose a future pickup time.','error');
+        if(getLicenseStatus(cust,{end}).status!=='Valid')return toast('License must remain valid through the return date.','error');
         if (!Number.isFinite(new Date(start).getTime()) || !Number.isFinite(new Date(end).getTime()) || new Date(end) <= new Date(start)) {
             const sameDay = (form.start.value||'').slice(0,10) === (form.end.value||'').slice(0,10);
             toast(sameDay ? 'For a same-day rental, return time must be later than pickup time.' : 'End date must be after start date.', 'error');
@@ -2804,10 +2781,13 @@ function renderAdminVehicles(filter) {
         }
         if (btn) btn.disabled = true;
         const { total } = computeFee(vehicleId, start, end);
-        const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod, trackingConsent: { accepted: true, at: new Date().toISOString() } };
+        const r = { id: uid('r'), vehicleId, customerId: cust.id, customerName: cust.name, customerEmail: cust.email, start, end, actualReturn: null, status: 'pending', totalFee: total, overtimeFee: 0, createdAt: new Date().toISOString(), approvedBy: null, rejectReason: '', adminNotes: '', deliveryMethod, deliveryAddress: deliveryMethod.startsWith('Host Delivery') ? (form.elements.deliveryAddress?.value||'').trim() : '', collectionAddress: deliveryMethod.endsWith('Host Collection') ? (form.elements.collectionAddress?.value||'').trim() : '', trackingConsent: { accepted: true, at: new Date().toISOString() } };
         setTimeout(() => {
             const restriction=customerRestriction(cust); if(restriction){if(btn)btn.disabled=false;return toast(restriction,'error');}
+            if(state.role!=='customer'||currentCustomer()?.id!==cust.id||hasConflict(vehicleId,start,end).conflict){if(btn)btn.disabled=false;return toast('Availability or account changed. Please review your request.','error');}
             state.reservations.unshift(r);
+            bookingDrafts.delete(bkKey(getVehicle(vehicleId)));
+            state.ui.bookingSuccess=r.id;
             notify('admin', 'New reservation request', `${cust.name} requested ${getVehicle(vehicleId)?.name || 'a vehicle'}.`, `#/admin/reservation/${r.id}`);
             toast('Request submitted. Please wait for admin approval. You will be notified.', 'success');
             navigate(`#/customer/reservation/${r.id}`);
@@ -3439,7 +3419,7 @@ function renderAdminVehicles(filter) {
         openCalendarAdd, openCalendarReservation, saveCalendarReservation, openCalendarEvent, cancelCalendarReservation, openServiceModal, saveService, finishService, openServicePlan, saveServicePlan, updateCalendarEstimate,
         loginAs, switchRole, goHome, setUI, searchVehicles, render, toggleNotifications, closeNotifications, markAllRead, markNotifRead, ncView, ncSearch, ncReset, ncRead, ncArchive, ncOpen, ncViewAll,
         scrollLandingTo, toggleLandingMenu, dismissLandingBanner, getLandingPromos, getFeaturedLandingVehicles, renderLanding,
-        updateFeePreview, submitReservation, confirmCancelReservation, submitCancelReservation, customerCancel,
+        bkMonth, bkChooseDate, bkSync, bkAdvance, bkSubmit, bkAlternative, bkSimilar, updateFeePreview, submitReservation, confirmCancelReservation, submitCancelReservation, customerCancel,
         previewProof, submitPayment,
         approveReservation, rejectReservation, openRejectReservationModal, submitRejectReservation,
         startRental, openCompleteModal, completeRental, updateOvertimePreview, openOvertimePayment, submitOvertimePayment,
