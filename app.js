@@ -1,3 +1,11 @@
+
+
+
+
+
+
+
+
 // V.E.R.A. App (vanilla JS, hash router, in-memory state)
 (function () {
     'use strict';
@@ -84,6 +92,8 @@
             if (overlaps(start, end, r.start, r.end))
                 return { conflict: true, reason: `Overlaps with an existing rental (${fmtDateShort(r.start)}–${fmtDateShort(r.end)}).`, conflictRes: r };
         }
+        const service = (state.opsServices || []).find(m => m.vehicleId === vehicleId && m.status === 'scheduled' && overlaps(start,end,m.start,m.end));
+        if (service) return { conflict:true, reason:`Overlaps scheduled service: ${service.title}.` };
         return { conflict: false };
     }
     function computeFee(vehicleId, start, end) {
@@ -260,8 +270,9 @@
             case 'notifications':
                 renderCustomerNotifications();
                 break;
-            case 'history':
-                renderCustomerHistory();
+            case 'account':
+            case 'history': // Legacy links open the combined Account page.
+                renderCustomerAccount();
                 break;
             default: renderCustomerVehicles();
         }
@@ -351,7 +362,9 @@
         const accountBtn = document.getElementById('accountBtn');
         if (accountBtn) {
             accountBtn.classList.toggle('hidden', state.role !== 'customer');
-            accountBtn.classList.toggle('active', location.hash === '#/customer/history');
+            accountBtn.classList.toggle('active', ['#/customer/account', '#/customer/history'].includes(location.hash));
+             accountBtn.setAttribute('href', '#/customer/account');
+             accountBtn.onclick = e => { e.preventDefault(); navigate('#/customer/account'); };
         }
         if (state.role === 'admin' && App.Tracking?.preloadLeaflet) { try { App.Tracking.preloadLeaflet(); } catch (_) {} }
         const items = navItems();
@@ -519,7 +532,7 @@
                 return `<article class="panel landing-card">
                   ${landingImage(v.imageUrl || v.imageUrlAlt || '', `${v.brand} ${v.name}`, 'landing-card-media', '🏍️', 'Vehicle image')}
                   <div class="panel-body">
-                    <div class="landing-card-top"><div><h3>${esc(v.brand)} ${esc(v.name)}</h3><p class="muted small">${esc(String(v.displacement||''))}cc · ${esc(v.transmission||'Manual')}</p></div><span class="status ${avail.bookable ? 'status-available' : 'status-pending'}">${esc(avail.label)}</span></div>
+                    <div class="landing-card-top"><div><h3>${esc(v.brand)} ${esc(v.name)}</h3><p class="muted small">${esc(String(v.displacement||''))}cc · ${esc(v.transmission||'Manual')}</p></div><span class="status ${v.status === 'available' ? 'status-available' : v.status === 'rented' ? 'status-rented' : 'status-pending'}">${esc(avail.label)}</span></div>
                     <div class="landing-price">${fmtPHP(v.ratePerDay)} <span class="muted small">/ day</span></div>
                     <a class="btn btn-primary btn-block" href="${state.role==='customer'?`#/customer/vehicle/${esc(v.id)}`:`#/login`}">View details</a>
                   </div>
@@ -610,7 +623,7 @@
             }
         } catch (err) {
             console.error('Landing render failed', err);
-            mount(`<div class="auth-wrap"><div class="auth-main"><div class="auth-box"><h1>V.E.R.A.</h1><p class="muted">The landing page encountered an issue.</p><div class="stack"><a class="btn btn-primary" href="#/customer/vehicles">Browse vehicles</a>${state.role ? `<a class="btn" href="${dashboardHash()}">Continue to dashboard</a>` : `<a class="btn" href="#/customer/history">Login</a>`}</div></div></div></div>`);
+            mount(`<div class="auth-wrap"><div class="auth-main"><div class="auth-box"><h1>V.E.R.A.</h1><p class="muted">The landing page encountered an issue.</p><div class="stack"><a class="btn btn-primary" href="#/customer/vehicles">Browse vehicles</a>${state.role ? `<a class="btn" href="${dashboardHash()}">Continue to dashboard</a>` : `<a class="btn" href="#/login">Login</a>`}</div></div></div></div>`);
         }
     }
     // ---------- Customer: Vehicles ----------
@@ -664,7 +677,7 @@
     function vehicleAvailabilityLabel(v) {
         if (!v) return { label: 'Unknown', tone: 'muted', bookable: false };
         if (v.status === 'available') return { label: 'Available', tone: 'success', bookable: true };
-        if (v.status === 'rented') return { label: 'Rented', tone: 'warning', bookable: false };
+        if (v.status === 'rented') return { label: 'Rented', tone: 'warning', bookable: true };
         if (v.status === 'maintenance' || v.status === 'malfunction') return { label: 'Maintenance', tone: 'danger', bookable: false };
         return { label: String(v.status || 'Unknown'), tone: 'muted', bookable: false };
     }
@@ -681,7 +694,7 @@
         <div class="page-header">
           <div>
             <h1 class="page-title">Choose a motorcycle</h1>
-            <p class="page-desc">Step 1: Select an available model. Non-available vehicles are visible but cannot be booked.</p>
+            <p class="page-desc">Step 1: Choose a motorcycle. Currently rented units can be reserved for future available dates.</p>
           </div>
         </div>
         <div class="toolbar" style="gap:10px;flex-wrap:wrap;">
@@ -701,7 +714,7 @@
                 <div class="vehicle-card-meta"><span>Plate: <span class="mono">${esc(v.plateNumber)}</span></span><span>${esc(v.color)}</span></div>
                 <div class="mt-2">
                   ${bookable
-                    ? `<a class="btn btn-primary btn-block" href="#/customer/vehicle/${v.id}" data-ai-target="book-vehicle-${esc(v.id)}">View details & reserve</a>`
+                    ? `<a class="btn btn-primary btn-block" href="#/customer/vehicle/${v.id}" data-ai-target="book-vehicle-${esc(v.id)}">${v.status === 'rented' ? 'Reserve future dates' : 'View details & reserve'}</a>`
                     : `<button class="btn btn-block" disabled aria-disabled="true">Not available for booking</button>`}
                 </div>
               </div>
@@ -713,10 +726,11 @@
         if (s && s.value) { s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
     }
 
-    function isVehicleBookable(v) { return !!v && !['maintenance', 'malfunction', 'rented'].includes(v.status); }
+    function isVehicleBookable(v) { return vehicleAvailabilityLabel(v).bookable; }
     function getBlockedRanges(vehicleId, excludeId) {
         return reservationsForVehicle(vehicleId)
             .filter(r => (r.status === 'approved' || r.status === 'ongoing') && r.id !== excludeId)
+            .concat((state.opsServices || []).filter(m => m.vehicleId === vehicleId && m.status === 'scheduled'))
             .map(r => ({ from: new Date(r.start), to: new Date(r.end), start: r.start, end: r.end }));
     }
     function rangeCrossesBlocked(start, end, blockedRanges) {
@@ -774,7 +788,7 @@
             <p class="small muted mt-2">Read-only information for approval review. Approval rules remain unchanged.</p>
         `);
     }
-    function licenseUploadTarget() { return '#/customer/history'; }
+    function licenseUploadTarget() { return '#/customer/account'; }
 
     function parseBudgetAmount(input) {
         if (input == null) return null;
@@ -951,6 +965,7 @@
         <div style="grid-column: span 2;">
           <div class="panel"><div class="panel-header"><div class="panel-title">Book this vehicle</div></div><div class="panel-body">
             ${blockedVehicle ? `<div class="callout danger">This vehicle is currently <strong>${esc(v.status)}</strong> and cannot accept reservation requests.</div>` : unavailable ? `<div class="callout warning">This vehicle is currently <strong>${esc(v.status)}</strong>. Please choose another available vehicle.</div>` : `
+            ${v.status === 'rented' ? `<div class="callout warning mb-2">This motorcycle is currently rented. You can request a future rental for dates outside existing bookings.</div>` : ''}
             <form id="reqForm" data-ai-target="booking-form" onsubmit="App.submitReservation(event,'${v.id}')" class="stack booking-flow">
               <div class="booking-step"><div class="step-head"><span class="step-num">1</span><div><div class="step-title">Choose model</div><div class="small muted">Selected: ${esc(v.brand)} ${esc(v.name)} (${esc(v.displacement)}cc)</div></div></div></div>
 
@@ -1265,33 +1280,50 @@
             : `<div class="empty"><div class="empty-title">No notifications</div><div>You're up to date.</div></div>`}
     `);
     }
-    function renderCustomerHistory() {
+    function renderCustomerAccount() {
         const cust = currentCustomer();
-        const allMine = state.reservations.filter(r => ownsReservation(r)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        if (!cust) return;
+        const allMine = state.reservations.filter(r => ownsReservation(r) && ['completed','cancelled','rejected'].includes(r.status)).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
         const completed = allMine.filter(r => r.status === 'completed');
-        const spent = completed.reduce((s, r) => s + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r), 0);
+        const spent = completed.reduce((sum,r) => sum + r.totalFee + (r.overtimeFee || 0) - refundDeducted(r),0);
         mount(`
-      <div class="page-header"><div><h1 class="page-title">Account</h1><p class="page-desc">Your profile information and rental history.</p></div></div>
-      <div class="grid-3">
-        <div class="stack">
-          <div class="panel"><div class="panel-header"><div class="panel-title">Profile</div><button class="btn btn-sm" data-ai-target="edit-profile" onclick="App.editCustomerIdentity('${cust.id}')">Edit profile</button></div><div class="panel-body"><div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">${customerAvatar(cust)}${identityBadge(cust)}</div>
-            <div class="kv"><div class="k">Name</div><div class="v">${esc(cust.name)}</div><div class="k">Email</div><div class="v">${esc(cust.email)}</div><div class="k">Phone</div><div class="v">${esc(cust.phone)}</div><div class="k">Joined</div><div class="v">${fmtDateShort(cust.joinedAt)}</div></div>
-          </div></div>
-          <div class="panel"><div class="panel-header"><div class="panel-title">Identification documents</div></div><div class="panel-body">${customerDocuments(cust)}${cust.identification?.rejectionReason ? `<div class="callout danger mt-2">${esc(cust.identification.rejectionReason)}</div>` : ''}</div></div><div class="metrics" style="grid-template-columns:1fr 1fr;">
-            <div class="metric"><div class="metric-label">Completed rentals</div><div class="metric-value">${completed.length}</div></div>
-            <div class="metric"><div class="metric-label">Total spent</div><div class="metric-value sm">${fmtPHP(spent)}</div></div>
+          <div class="page-header"><div><h1 class="page-title">Account</h1><p class="page-desc">Your profile information and rental history.</p></div></div>
+          <div class="account-layout" style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;">
+            <div class="account-profile" style="flex:1 1 280px;min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;">
+              <div class="panel">
+                <div class="panel-header"><div class="panel-title">Profile</div><button class="btn btn-sm" data-ai-target="edit-profile" onclick="App.editCustomerIdentity('${cust.id}')">Edit profile</button></div>
+                <div class="panel-body">
+                  <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">${customerAvatar(cust)}${identityBadge(cust)}</div>
+                  <div class="kv" style="grid-template-columns:70px minmax(0,1fr);overflow-wrap:anywhere;">
+                    <div class="k">Name</div><div class="v">${esc(cust.name)}</div>
+                    <div class="k">Email</div><div class="v">${esc(cust.email)}</div>
+                    <div class="k">Phone</div><div class="v">${esc(cust.phone)}</div>
+                    <div class="k">Joined</div><div class="v">${fmtDateShort(cust.joinedAt)}</div>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-header"><div class="panel-title">Identification documents</div></div>
+                <div class="panel-body">${customerDocuments(cust, true)}${cust.identification?.rejectionReason ? `<div class="callout danger mt-2">${esc(cust.identification.rejectionReason)}</div>` : ''}</div>
+              </div>
+            </div>
+            <div class="account-history" style="flex:3 1 540px;min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:12px;">
+              <div class="account-metrics" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
+                <div class="metric" style="min-width:0;"><div class="metric-label">Completed rentals</div><div class="metric-value">${completed.length}</div></div>
+                <div class="metric" style="min-width:0;"><div class="metric-label">Total spent</div><div class="metric-value sm" style="overflow-wrap:anywhere;">${fmtPHP(spent)}</div></div>
+              </div>
+              <div class="panel" style="min-width:0;">
+                <div class="panel-header"><div class="panel-title">Rental history</div></div>
+                <div class="panel-body flush" style="min-width:0;">
+                  ${allMine.length ? `<div class="table-wrap" style="overflow-x:auto;"><table class="table"><thead><tr><th>Vehicle</th><th>Period</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>${allMine.map(r => {
+                    const v = getVehicle(r.vehicleId);
+                    return `<tr><td><div class="cell-main">${esc(v ? v.name : r.vehicleId)}</div><div class="cell-sub">${esc(v ? v.plateNumber : '')}</div></td><td class="small">${fmtDateShort(r.start)} – ${fmtDateShort(r.end)}</td><td>${fmtPHP(r.totalFee + (r.overtimeFee || 0))}</td><td>${statusBadge(r.status)}</td><td class="text-right"><a class="btn btn-sm btn-ghost" href="#/customer/reservation/${r.id}">View</a></td></tr>`;
+                  }).join('')}</tbody></table></div>` : `<div class="empty"><div class="empty-title">No rental history</div><div>Completed and past rentals will appear here.</div></div>`}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div style="grid-column: span 2;">
-          <div class="panel"><div class="panel-header"><div class="panel-title">Rental history</div></div><div class="panel-body flush">
-            ${allMine.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Vehicle</th><th>Period</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>${allMine.map(r => {
-            const v = getVehicle(r.vehicleId);
-            return `<tr><td><div class="cell-main">${esc(v ? v.name : r.vehicleId)}</div><div class="cell-sub">${esc(v ? v.plateNumber : '')}</div></td><td class="small">${fmtDateShort(r.start)} – ${fmtDateShort(r.end)}</td><td>${fmtPHP(r.totalFee + (r.overtimeFee || 0))}</td><td>${statusBadge(r.status)}</td><td class="text-right"><a class="btn btn-sm btn-ghost" href="#/customer/reservation/${r.id}">View</a></td></tr>`;
-        }).join('')}</tbody></table></div>` : `<div class="empty"><div class="empty-title">No rental history</div><div>Completed and past rentals will appear here.</div></div>`}
-          </div></div>
-        </div>
-      </div>
-    `);
+        `);
     }
     function renderOvertimeRulesPanel() {
         const s = getOvertimeSettings();
@@ -1560,7 +1592,9 @@ function renderAdminVehicles() {
         const logs = state.maintenanceLogs.slice().sort((a, b) => new Date(b.reportedAt) - new Date(a.reportedAt));
         mount(`
       <div class="page-header"><div><h1 class="page-title">Maintenance and incidents</h1><p class="page-desc">Track service records and reported vehicle issues.</p></div><div><button class="btn btn-primary" onclick="App.openMaintenanceModal()">Log entry</button></div></div>
-      ${logs.length ? `<div class="panel"><div class="panel-body flush"><table class="table"><thead><tr><th>Vehicle</th><th>Type</th><th>Damage</th><th>Photos</th><th>Title</th><th>Reported</th><th>Cost</th><th>Status</th><th>Actions</th></tr></thead><tbody>${logs.map(l => {
+      ${servicePlanningHTML()}
+      <h2 class="panel-title mb-3">Maintenance and incident history</h2>
+      ${logs.length ? `<div class="panel"><div class="panel-body flush"><div class="table-wrap"><table class="table"><thead><tr><th>Vehicle</th><th>Type</th><th>Damage</th><th>Photos</th><th>Title</th><th>Reported</th><th>Cost</th><th>Status</th><th>Actions</th></tr></thead><tbody>${logs.map(l => {
             const v = getVehicle(l.vehicleId);
             return `<tr>
           <td><div class="cell-main">${esc(v ? v.name : l.vehicleId)}</div><div class="cell-sub">${esc(v ? v.plateNumber : '')}</div></td>
@@ -1573,7 +1607,7 @@ function renderAdminVehicles() {
           <td>${statusBadge(l.status)}</td>
           <td><button class="btn btn-sm" onclick="App.viewMaintenance('${l.id}')">View</button></td>
         </tr>`;
-        }).join('')}</tbody></table></div></div>` : `<div class="empty"><div class="empty-title">No maintenance or incident records</div><div>Log service work or reported issues to track vehicle condition.</div></div>`}
+        }).join('')}</tbody></table></div></div></div>` : `<div class="empty"><div class="empty-title">No maintenance or incident records</div><div>Log service work or reported issues to track vehicle condition.</div></div>`}
     `);
     }
     // ---------- Admin: Reports ----------
@@ -2095,9 +2129,9 @@ function renderAdminVehicles() {
         const src = safeCustomerImage(c.profileImage);
         return `<div style="width:42px;height:42px;flex:0 0 42px;border-radius:50%;overflow:hidden;background:var(--surface-alt);display:grid;place-items:center">${src ? `<img src="${src}" alt="Profile photo" style="width:100%;height:100%;object-fit:cover">` : esc(c.name.split(/\s+/).map(x => x[0]).slice(0,2).join(''))}</div>`;
     }
-    function customerDocuments(c) {
+    function customerDocuments(c, singleColumn = false) {
         const d = c.identification || {};
-        return `<div class="grid-2">${Object.entries(identityFields).map(([key,label]) => {
+        return `<div ${singleColumn ? 'class="account-documents" style="display:grid;grid-template-columns:minmax(0,1fr);gap:12px;"' : 'class="grid-2"'}>${Object.entries(identityFields).map(([key,label]) => {
             const src = safeCustomerImage(key === 'profileImage' ? c.profileImage : d[key]);
             return `<div><div class="field-label">${label}</div><div class="proof-preview">${src ? `<a href="${src}" download="${key}.jpg"><img src="${src}" alt="${label}"></a>` : 'Not submitted'}</div></div>`;
         }).join('')}</div>`;
@@ -2297,6 +2331,7 @@ function renderAdminVehicles() {
     function submitReservation(e, vehicleId) {
         e.preventDefault();
         if (state.role !== 'customer') return;
+        if (!isVehicleBookable(getVehicle(vehicleId))) return toast('This motorcycle cannot accept reservations right now.', 'error');
         if (state.reservations.some(r => ownsReservation(r) && r.status === 'completed' && ['unpaid','pending','rejected'].includes(overtimeStatus(r)))) return toast('Settle outstanding overtime before requesting another rental.', 'error');
         const form = e.target;
         const btn = form.querySelector('button[type="submit"]');
@@ -2710,14 +2745,16 @@ function renderAdminVehicles() {
         toast('Note saved.', 'success');
     }
     // ---------- Audit trail (session-only, no document contents) ----------
+    state.opsServices = state.opsServices || [];
     const auditFields = {
-        vehicles: ['name','brand','model','year','plateNumber','displacement','ratePerDay','ratePerHour','status','color','seats','transmission'],
+        opsServices: ['vehicleId','title','start','end','status','cost','resolvedAt'],
+        vehicles: ['name','brand','model','year','plateNumber','displacement','ratePerDay','ratePerHour','status','color','seats','transmission','odometer','serviceDueDate','serviceDueMileage'],
         reservations: ['vehicleId','customerId','start','end','actualReturn','status','totalFee','overtimeFee','deliveryMethod','approvedBy','rejectReason','cancelReason','adminNotes'],
         payments: ['reservationId','paymentType','method','amount','status','submittedAt','verifiedAt','verifiedBy','rejectReason'],
         maintenanceLogs: ['vehicleId','type','title','description','damageLocation','status','cost','reportedAt','resolvedAt','resolutionNotes','resolvedBy'],
         customers: ['totalRentals']
     };
-    const auditModules = {vehicles:'Vehicles',reservations:'Reservations',payments:'Payments',maintenanceLogs:'Maintenance',customers:'Customers'};
+    const auditModules = {opsServices:'Maintenance',vehicles:'Vehicles',reservations:'Reservations',payments:'Payments',maintenanceLogs:'Maintenance',customers:'Customers'};
     function auditSnapshot() {
         const result = new Map();
         function add(module, id, label, fields, link, target = id) {
@@ -2728,7 +2765,7 @@ function renderAdminVehicles() {
             for (const item of state[collection]) {
                 const fields = pick(item, keys);
                 const module = auditModules[collection];
-                let link = `#/admin/${collection === 'maintenanceLogs' ? 'maintenance' : collection}`;
+                let link = `#/admin/${['maintenanceLogs','opsServices'].includes(collection) ? 'maintenance' : collection}`;
                 if (collection === 'reservations') link = `#/admin/reservation/${item.id}`;
                 if (collection === 'maintenanceLogs') fields.photoCount = (item.photos || []).length;
                 if (collection === 'payments') fields.proofAttached = Boolean(item.proofDataUrl);
@@ -2780,6 +2817,104 @@ function renderAdminVehicles() {
         const d = new Date(iso);
         return Number.isFinite(d.getTime()) ? d.toISOString() : null;
     }
+    // ---------- Interactive fleet scheduling and preventive maintenance ----------
+    function calendarISO(value) {
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value || '')) return null;
+        const d = new Date(value + ':00+08:00');
+        return Number.isFinite(d.getTime()) && fmtDateTimeInput(d.toISOString()) === value ? d.toISOString() : null;
+    }
+    function calendarVehicleOptions(selected) {
+        return state.vehicles.map(v => `<option value="${esc(v.id)}" ${v.id === selected ? 'selected' : ''}>${esc(v.brand+' '+v.name+' · '+v.plateNumber)}</option>`).join('');
+    }
+    function calendarDefaults(date) {
+        const day = date && date >= todayKey() ? date : todayKey();
+        const planned = Date.parse(day+'T08:00:00+08:00');
+        const start = Math.max(planned, Math.ceil((Date.now()+60000)/3600000)*3600000);
+        return [fmtDateTimeInput(new Date(start).toISOString()),fmtDateTimeInput(new Date(start+86400000).toISOString())];
+    }
+    function openCalendarAdd(vehicleId='',date='') {
+        if (!adminOnly()) return;
+        const v = vehicleId || (state.ui.fleetVehicle !== 'all' ? state.ui.fleetVehicle : '') || state.vehicles[0]?.id || '';
+        const d = date || todayKey();
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Add calendar event</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><div class="modal-body stack"><p class="muted">${esc(getVehicle(v)?.name || 'Select a motorcycle')} · ${esc(d)}</p><button class="btn btn-primary" onclick="App.openCalendarReservation('${esc(v)}','${esc(d)}')">New reservation</button><button class="btn" onclick="App.openServiceModal('${esc(v)}','${esc(d)}')">Schedule maintenance</button></div></div>`);
+    }
+    function calendarReservationEditable(r) {
+        return !!r && ['pending','approved'].includes(r.status) && !state.payments.some(p=>p.reservationId===r.id && ['pending','verified'].includes(p.status));
+    }
+    function openCalendarReservation(vehicleId='',date='',id='') {
+        if (!adminOnly()) return;
+        const r = id ? getReservation(id) : null;
+        if (id && !calendarReservationEditable(r)) return toast('Only unpaid pending or approved reservations can be edited here.','error');
+        const [start,end] = calendarDefaults(date);
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">${r?'Reschedule reservation':'New reservation'}</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form id="calendarReservationForm" onsubmit="App.saveCalendarReservation(event,'${esc(id)}')" onchange="App.updateCalendarEstimate()"><div class="modal-body stack"><div class="field"><label class="field-label">Motorcycle</label><select name="vehicleId" class="select" required>${calendarVehicleOptions(r?.vehicleId || vehicleId)}</select></div><div class="field"><label class="field-label">Customer</label><select name="customerId" class="select" required ${r?'disabled':''}>${state.customers.map(c=>`<option value="${esc(c.id)}" ${r?.customerId===c.id?'selected':''}>${esc(c.name)} · ${esc(c.email)}</option>`).join('')}</select></div><div class="form-grid"><div class="field"><label class="field-label">Pickup (Manila)</label><input type="datetime-local" name="start" class="input" required value="${r?fmtDateTimeInput(r.start):start}"></div><div class="field"><label class="field-label">Return (Manila)</label><input type="datetime-local" name="end" class="input" required value="${r?fmtDateTimeInput(r.end):end}"></div></div><div class="field"><label class="field-label">Delivery method</label><select name="deliveryMethod" class="select">${DELIVERY_METHODS.map(m=>`<option ${r?.deliveryMethod===m?'selected':''}>${esc(m)}</option>`).join('')}</select></div><div class="field"><label class="field-label">Admin notes</label><textarea name="notes" class="input">${esc(r?.adminNotes||'')}</textarea></div><label><input type="checkbox" name="consent" ${r?.trackingConsent?.accepted?'checked':''} required> Customer has explicitly provided GPS tracking consent.</label><div id="calendarEstimate" class="callout info"></div><p class="small muted">New reservations enter Pending. Approval and payment verification remain separate. Editing an approved unpaid reservation returns it to Pending for review.</p></div><div class="modal-footer"><button type="button" class="btn" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary" type="submit">Save reservation</button></div></form></div>`);
+        updateCalendarEstimate();
+    }
+    function updateCalendarEstimate() {
+        const f=$('#calendarReservationForm')?.elements, box=$('#calendarEstimate');
+        if (!f || !box) return;
+        const a=calendarISO(f.start.value), b=calendarISO(f.end.value);
+        const fee=computeFee(f.vehicleId.value,a,b);
+        box.textContent=fee.days ? `${fee.days} rental day(s) · ${fmtPHP(fee.total)}` : 'Select a valid rental period.';
+    }
+    function saveCalendarReservation(e,id) {
+        e.preventDefault(); if (!adminOnly()) return;
+        const f=e.target.elements, r=id?getReservation(id):null;
+        if (id && !calendarReservationEditable(r)) return toast('Reservation cannot be edited.','error');
+        const c=getCustomer(r?.customerId || f.customerId.value), v=getVehicle(f.vehicleId.value), start=calendarISO(f.start.value), end=calendarISO(f.end.value);
+        if (!c || !v || !start || !end || Date.parse(end)<=Date.parse(start) || Date.parse(start)<Date.now() || !DELIVERY_METHODS.includes(f.deliveryMethod.value) || !f.consent.checked) return toast('Check customer, motorcycle, future pickup/return times, delivery method and consent.','error');
+        if (!bookingHasLicense(c) || getLicenseStatus(c,{end}).status !== 'Valid') return toast('Customer needs a valid license on file through the return date.','error');
+        if (state.reservations.some(x=>x.customerId===c.id && x.status==='completed' && ['unpaid','pending','rejected'].includes(overtimeStatus(x)))) return toast('Customer must settle outstanding overtime first.','error');
+        const conflict=hasConflict(v.id,start,end,id);
+        if (conflict.conflict) return toast(conflict.reason,'error');
+        // Preserve pending request competition, but never overlap approved/ongoing bookings or service.
+        const now=new Date().toISOString(), data={vehicleId:v.id,customerId:c.id,customerName:c.name,customerEmail:c.email,start,end,status:'pending',totalFee:computeFee(v.id,start,end).total,approvedBy:null,deliveryMethod:f.deliveryMethod.value,adminNotes:f.notes.value.trim(),trackingConsent:r?.trackingConsent?.accepted?r.trackingConsent:{accepted:true,at:now}};
+        if (r) Object.assign(r,data); else state.reservations.unshift({id:uid('r'),...data,actualReturn:null,overtimeFee:0,createdAt:now,rejectReason:'',refund:null});
+        notify('customer',r?'Reservation updated':'Reservation created',`${v.name} reservation is pending review.`,'#/customer/reservations',c.id);
+        closeModal(); toast(r?'Reservation updated.':'Reservation added to the calendar.','success'); render();
+    }
+    function openCalendarEvent(id) {
+        if (!adminOnly()) return;
+        const r=getReservation(id); if (!r) return;
+        const edit=calendarReservationEditable(r);
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Reservation details</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><div class="modal-body stack"><div>${statusBadge(r.status)}</div><div class="kv"><div class="k">Customer</div><div class="v">${esc(r.customerName)}</div><div class="k">Motorcycle</div><div class="v">${esc(getVehicle(r.vehicleId)?.name || r.vehicleId)}</div><div class="k">Pickup</div><div class="v">${fmtDate(r.start,{time:true})}</div><div class="k">Return</div><div class="v">${fmtDate(r.end,{time:true})}</div><div class="k">Rental fee</div><div class="v">${fmtPHP(r.totalFee)}</div></div>${!edit&&['pending','approved'].includes(r.status)?'<p class="small muted">Payment already submitted. Manage this booking through its reservation record.</p>':''}</div><div class="modal-footer"><a class="btn" href="#/admin/reservation/${esc(id)}" onclick="App.closeModal()">Full details</a>${edit?`<button class="btn btn-danger" onclick="App.cancelCalendarReservation('${esc(id)}')">Cancel reservation</button><button class="btn btn-primary" onclick="App.openCalendarReservation('','','${esc(id)}')">Edit / reschedule</button>`:''}</div></div>`);
+    }
+    function cancelCalendarReservation(id) {
+        if (!adminOnly()) return;
+        const r=getReservation(id); if (!calendarReservationEditable(r)) return;
+        openConfirm({title:'Cancel reservation?',body:'The record will be retained in Rental History.',confirmLabel:'Cancel reservation',danger:true,onConfirm:()=>{if(!adminOnly()||!calendarReservationEditable(r))return;r.status='cancelled';r.cancelReason='Cancelled by administrator via Fleet Schedule';notify('customer','Reservation cancelled',r.cancelReason,'#/customer/history',r.customerId);closeModal();toast('Reservation cancelled.','success');render();}});
+    }
+    function servicePlanningHTML() {
+        const plans=state.vehicles.map(v=>{const date=v.serviceDueDate||'', km=v.serviceDueMileage; const overdue=(date&&date<=todayKey())||(km!=null&&v.odometer!=null&&v.odometer>=km);const soon=(date&&Date.parse(date+'T00:00:00+08:00')-Date.parse(todayKey()+'T00:00:00+08:00')<=7*86400000)||(km!=null&&v.odometer!=null&&km-v.odometer<=500);return `<tr><td><div class="cell-main">${esc(v.name)}</div><div class="cell-sub">${esc(v.plateNumber)}</div></td><td>${v.odometer==null?'—':esc(v.odometer)+' km'}</td><td>${date?esc(date):'—'}</td><td>${km==null?'—':esc(km)+' km'}</td><td>${!date&&km==null?'Not configured':overdue?'<span class="status status-malfunction">Due</span>':soon?'<span class="status status-pending">Approaching due</span>':'Not due'}</td><td><button class="btn btn-sm" onclick="App.openServicePlan('${esc(v.id)}')">Service plan</button> <button class="btn btn-sm" onclick="App.openServiceModal('${esc(v.id)}','${todayKey()}')">Schedule service</button></td></tr>`;}).join('');
+        const services=state.opsServices.slice().sort((a,b)=>Date.parse(a.start)-Date.parse(b.start));
+        return `<div class="panel mb-3"><div class="panel-header"><div class="panel-title">Preventive maintenance plans</div></div><div class="panel-body flush"><div class="table-wrap"><table class="table"><thead><tr><th>Motorcycle</th><th>Odometer</th><th>Next service date</th><th>Next service mileage</th><th>Due status</th><th>Actions</th></tr></thead><tbody>${plans}</tbody></table></div></div></div><div class="panel mb-3"><div class="panel-header"><div class="panel-title">Scheduled maintenance</div><button class="btn btn-sm btn-primary" onclick="App.openServiceModal()">Schedule service</button></div><div class="panel-body flush"><div class="table-wrap"><table class="table"><thead><tr><th>Motorcycle</th><th>Service</th><th>Period</th><th>Status</th><th>Cost</th><th>Actions</th></tr></thead><tbody>${services.map(m=>`<tr><td>${esc(getVehicle(m.vehicleId)?.name||m.vehicleId)}</td><td>${esc(m.title)}</td><td>${fmtDate(m.start,{time:true})} – ${fmtDate(m.end,{time:true})}</td><td>${statusBadge(m.status)}</td><td>${m.cost==null?'—':fmtPHP(m.cost)}</td><td>${m.status==='scheduled'?`<button class="btn btn-sm" onclick="App.openServiceModal('${esc(m.vehicleId)}','','${esc(m.id)}')">Manage</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="6" class="muted">No scheduled maintenance.</td></tr>'}</tbody></table></div></div></div>`;
+    }
+    function openServicePlan(id) {
+        if (!adminOnly()) return; const v=getVehicle(id);if(!v)return;
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">Service plan · ${esc(v.name)}</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form onsubmit="App.saveServicePlan(event,'${esc(id)}')"><div class="modal-body stack"><div class="field"><label class="field-label">Current odometer (km)</label><input class="input" name="odometer" type="number" min="0" step="1" value="${esc(v.odometer??'')}"></div><div class="field"><label class="field-label">Next service date</label><input class="input" name="dueDate" type="date" value="${esc(v.serviceDueDate||'')}"></div><div class="field"><label class="field-label">Next service mileage (km)</label><input class="input" name="dueMileage" type="number" min="0" step="1" value="${esc(v.serviceDueMileage??'')}"></div><p class="small muted">Approaching due: within 7 days or 500 km. Enter at least a date or mileage to configure a plan.</p></div><div class="modal-footer"><button class="btn" type="button" onclick="App.closeModal()">Cancel</button><button class="btn btn-primary">Save plan</button></div></form></div>`);
+    }
+    function saveServicePlan(e,id) {
+        e.preventDefault();if(!adminOnly())return;const v=getVehicle(id),f=e.target.elements;if(!v)return;
+        const km=f.odometer.value===''?null:Number(f.odometer.value), due=f.dueMileage.value===''?null:Number(f.dueMileage.value);
+        if ([km,due].some(x=>x!==null&&(!Number.isInteger(x)||x<0)))return toast('Mileage must be a non-negative whole number.','error');
+        Object.assign(v,{odometer:km,serviceDueDate:f.dueDate.value||null,serviceDueMileage:due});closeModal();toast('Service plan saved.','success');render();
+    }
+    function openServiceModal(vehicleId='',date='',id='') {
+        if (!adminOnly())return;const m=id?state.opsServices.find(x=>x.id===id):null;if(id&&(!m||m.status!=='scheduled'))return;
+        const [start,end]=calendarDefaults(date);
+        openModal(`<div class="modal"><div class="modal-header"><div class="modal-title">${m?'Manage scheduled service':'Schedule service'}</div><button class="icon-btn" onclick="App.closeModal()">&times;</button></div><form onsubmit="App.saveService(event,'${esc(id)}')"><div class="modal-body stack"><div class="field"><label class="field-label">Motorcycle</label><select class="select" name="vehicleId" required>${calendarVehicleOptions(m?.vehicleId||vehicleId)}</select></div><div class="field"><label class="field-label">Service description</label><input class="input" name="title" required value="${esc(m?.title||'')}"></div><div class="form-grid"><div class="field"><label class="field-label">Start (Manila)</label><input class="input" type="datetime-local" name="start" required value="${m?fmtDateTimeInput(m.start):start}"></div><div class="field"><label class="field-label">End (Manila)</label><input class="input" type="datetime-local" name="end" required value="${m?fmtDateTimeInput(m.end):end}"></div></div>${m?'<div class="field"><label class="field-label">Actual cost (PHP) for completion</label><input class="input" type="number" min="0" step="0.01" name="cost" value="0"></div>':''}</div><div class="modal-footer">${m?`<button class="btn btn-danger" type="button" onclick="App.finishService('${esc(id)}','cancelled')">Cancel service</button><button class="btn" type="button" onclick="App.finishService('${esc(id)}','completed',this.form.elements.cost.value)">Complete</button>`:''}<button class="btn btn-primary" type="submit">Save service</button></div></form></div>`);
+    }
+    function saveService(e,id) {
+        e.preventDefault();if(!adminOnly())return;const f=e.target.elements,m=id?state.opsServices.find(x=>x.id===id):null;if(id&&(!m||m.status!=='scheduled'))return;
+        const v=getVehicle(f.vehicleId.value),start=calendarISO(f.start.value),end=calendarISO(f.end.value),title=f.title.value.trim();
+        if(!v||!title||!start||!end||Date.parse(end)<=Date.parse(start)||Date.parse(end)<=Date.now())return toast('Check service title and dates.','error');
+        if(state.reservations.some(r=>r.vehicleId===v.id&&['approved','ongoing'].includes(r.status)&&overlaps(start,end,r.start,r.end))||state.opsServices.some(x=>x.id!==id&&x.vehicleId===v.id&&x.status==='scheduled'&&overlaps(start,end,x.start,x.end)))return toast('Service conflicts with a confirmed rental or another scheduled service.','error');
+        const data={vehicleId:v.id,title,start,end,status:'scheduled'};if(m)Object.assign(m,data);else state.opsServices.push({id:uid('svc'),...data,cost:null});closeModal();toast('Service scheduled.','success');render();
+    }
+    function finishService(id,status,costValue) {
+        if(!adminOnly()||!['cancelled','completed'].includes(status))return;const m=state.opsServices.find(x=>x.id===id);if(!m||m.status!=='scheduled')return;
+        const cost=Number(costValue);if(status==='completed'&&(!Number.isFinite(cost)||cost<0||costValue===''))return toast('Enter a valid actual cost.','error');
+        openConfirm({title:status==='completed'?'Complete service?':'Cancel service?',body:status==='completed'?'A resolved maintenance record will be added. Update the service plan separately.':'The service record will be retained.',confirmLabel:status==='completed'?'Complete':'Cancel service',danger:status==='cancelled',onConfirm:()=>{if(!adminOnly()||m.status!=='scheduled')return;m.status=status;m.resolvedAt=new Date().toISOString();if(status==='completed'){m.cost=cost;state.maintenanceLogs.unshift({id:uid('m'),vehicleId:m.vehicleId,type:'maintenance',title:m.title,description:'Completed scheduled service.',cost,status:'resolved',reportedAt:m.start,resolvedAt:m.resolvedAt,photos:[]});}closeModal();toast('Service '+status+'.','success');render();}});
+    }
     function renderAdminSchedule() {
         if (!adminOnly()) { navigate('#/'); return; }
         const OPS_DAY = 86400000;
@@ -2806,15 +2941,15 @@ function renderAdminVehicles() {
                 const down = (state.maintenanceLogs || []).some(m => m.vehicleId === v.id && m.status === 'open' && Date.parse(m.reportedAt) <= Date.parse(cellEnd) && Date.parse(m.resolvedAt || '9999-12-31T23:59:59Z') >= Date.parse(d));
                 const events = rs.map(r => {
                     const cls = r.status === 'pending' ? 'ops-pending' : r.status === 'completed' ? 'ops-completed' : 'ops-approved';
-                    return `<a class="ops-event ${cls}" href="#/admin/reservation/${esc(r.id)}" title="${esc(r.id.toUpperCase() + ' ' + r.customerName)}">${esc(r.customerName.split(' ')[0])} <small>${esc(r.status)}</small></a>`;
-                }).concat(ms.map(m => `<span class="ops-event ops-service" title="${esc(m.title||'Service')}">Service <small>${esc(m.status)}</small></span>`));
-                return `<td class="${toManilaDateKey(d)===todayKey()?'fleet-today':''}"><div class="fleet-cell">${events.join('') || (down ? '<span class="ops-event ops-service">Maintenance</span>' : '<span class="ops-free">-</span>')}</div></td>`;
+                    return `<button type="button" class="ops-event ${cls}" onclick="App.openCalendarEvent('${esc(r.id)}')" title="${esc(r.id.toUpperCase() + ' ' + r.customerName)}">${esc(r.customerName.split(' ')[0])} <small>${esc(r.status)}</small></button>`;
+                }).concat(ms.map(m => `<button type="button" class="ops-event ops-service" onclick="App.openServiceModal('${esc(m.vehicleId)}','${key}','${esc(m.id)}')" title="${esc(m.title||'Service')}">Service <small>${esc(m.status)}</small></button>`));
+                return `<td class="${toManilaDateKey(d)===todayKey()?'fleet-today':''}"><div class="fleet-cell">${events.join('')}${down && kind !== 'rental' ? '<span class="ops-event ops-service">Maintenance</span>' : ''}${key >= todayKey() ? `<button type="button" class="btn btn-sm btn-ghost" style="width:100%;margin-top:4px" onclick="App.openCalendarAdd('${esc(v.id)}','${key}')" aria-label="Add event for ${esc(v.name)} on ${key}">+ Add</button>` : (!events.length && !down ? '<span class="ops-free">-</span>' : '')}</div></td>`;
             }).join('');
             return `<tr><th scope="row"><div class="fleet-moto"><strong>${esc(v.brand + ' ' + v.name)}</strong><span class="muted small">${esc(v.plateNumber || '-')} · ${esc(v.status)}</span></div></th>${cells}</tr>`;
         });
         mount(`
             <div class="page-header">
-              <div><h1 class="page-title">Fleet schedule</h1><p class="page-desc">Read-only dispatch calendar based on current reservations and maintenance. Manila time.</p></div>
+              <div><h1 class="page-title">Fleet schedule</h1><p class="page-desc">Click + Add on a motorcycle and date to create a reservation or schedule service. Click an event to manage it. Manila time.</p></div><button class="btn btn-primary" onclick="App.openCalendarAdd()">+ Add event</button>
             </div>
             <div class="metrics mb-3">
               <div class="metric"><div class="metric-label">Pending requests</div><div class="metric-value">${visibleReservations.filter(r=>r.status==='pending').length}</div></div>
@@ -2870,6 +3005,7 @@ function renderAdminVehicles() {
     // ---------- Wiring ----------
     window.App = {
         filterActivity, viewActivity, exportActivity,
+        openCalendarAdd, openCalendarReservation, saveCalendarReservation, openCalendarEvent, cancelCalendarReservation, openServiceModal, saveService, finishService, openServicePlan, saveServicePlan, updateCalendarEstimate,
         loginAs, switchRole, goHome, setUI, searchVehicles, render, toggleNotifications, closeNotifications, markAllRead, markNotifRead,
         scrollLandingTo, toggleLandingMenu, dismissLandingBanner, getLandingPromos, getFeaturedLandingVehicles, renderLanding,
         updateFeePreview, submitReservation, confirmCancelReservation, submitCancelReservation, customerCancel,
@@ -2901,3 +3037,7 @@ function renderAdminVehicles() {
         route();
     });
 })();
+
+
+
+
